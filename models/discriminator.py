@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 
-class D_Class(nn.Module):
+class DClass(nn.Module):
     def __init__(self, isize, nc, ndf, nclass):
-        super(D_Class, self).__init__()
+        super(DClass, self).__init__()
         assert isize % 16 == 0, "isize has to be a multiple of 16"
 
         inputimage = nn.Sequential()
@@ -55,9 +55,9 @@ class D_Class(nn.Module):
         return output.view(-1)
 
 
-class D_Dist(nn.Module):
+class DDist(nn.Module):
     def __init__(self, isize, nc, ndf):
-        super(D_Dist, self).__init__()
+        super(DDist, self).__init__()
         assert isize % 16 == 0, "isize has to be a multiple of 16"
 
         inputimage = nn.Sequential()
@@ -94,8 +94,8 @@ class D_Dist(nn.Module):
     def forward(self, image1, image2):
         inputim1 = self.inputimage(image1)
         inputim2 = self.inputimage(image2)
-        input = torch.cat([inputim1, inputim2], 1)
-        output = self.layers(input)
+        inputcat = torch.cat([inputim1, inputim2], 1)
+        output = self.layers(inputcat)
         output = self.final(output)
         return output.view(-1)
 
