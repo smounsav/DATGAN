@@ -37,7 +37,7 @@ class D_Class(nn.Module):
             csize = csize / 2
 
         layers.add_module('pyramid.{0}.{1}.dropout'.format(out_feat, out_feat),
-                      nn.Dropout2d(p=0.2, inplace=True))
+                      nn.Dropout2d(p=0.5, inplace=True))
         self.layers = layers
 
         # state size. K x 4 x 4
@@ -83,7 +83,7 @@ class D_Dist(nn.Module):
             csize = csize / 2
         layers.add_module('pyramid.{0}.{1}.dropout'.format(out_feat, out_feat),
                       nn.Dropout2d
-                      (p=0.2, inplace=True))
+                      (p=0.5, inplace=True))
         self.layers = layers
 
         # state size. K x 4 x 4

@@ -246,7 +246,7 @@ for epoch in range(opt.niter):
 
             #errD_unlabeled = netD_Class(traingenimages, trainreallabels)
             #errD_unlabeled.backward(mone)
-            errD_Class = - errD_Class_real + errD_Class_gen #- errD_unlabeled
+            errD_Class += - errD_Class_real + errD_Class_gen #- errD_unlabeled
             optimizerD_Class.step()
 
             #############################
@@ -283,7 +283,7 @@ for epoch in range(opt.niter):
                 errD_Dist_gen = outpout.mean()
             errD_Dist_gen.backward(one)
 
-            errD_Dist = - errD_Dist_real + errD_Dist_gen
+            errD_Dist += - errD_Dist_real + errD_Dist_gen
             optimizerD_Dist.step()
 
         ############################
@@ -327,7 +327,7 @@ for epoch in range(opt.niter):
 
         # Loss
         # errG = - errG_gen - errG_dist - errG_mutinfo
-        errG = - errG_class - errG_dist + errG_mutinfo
+        errG += - errG_class - errG_dist + errG_mutinfo
         optimizerG.step()
 
         ############################
@@ -382,7 +382,7 @@ for epoch in range(opt.niter):
         #    errC_CE_gen = Variable(torch.zeros(1).float())
         #    if opt.cuda:
         #        errC_CE_gen = errC_CE_gen.cuda()
-        errC = errC_CE_real + errC_CE_gen
+        errC += errC_CE_real + errC_CE_gen
         #else:
         #    errC = errC_CE_real
         #train with unlabeled
