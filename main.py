@@ -57,7 +57,6 @@ random.seed(opt.manualSeed)
 torch.manual_seed(opt.manualSeed)
 
 cudnn.benchmark = True
-
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 
@@ -95,7 +94,6 @@ def weights_init(m):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
     elif classname.find('Linear') != -1:
-#        m.weight.data.normal_(1.0, 0.02)
         m.weight.data.normal_(0.0, 0.05)
         m.bias.data.fill_(0)
 
@@ -147,10 +145,6 @@ CELoss = nn.CrossEntropyLoss()
 if opt.kldiv:
     BCELoss = nn.BCEWithLogitsLoss()
 
-# define image distance function
-#imageDist = nn.CosineSimilarity()
-#imageDist = nn.PairwiseDistance()
-
 # activate cuda acceleration if available
 if opt.cuda:
     netD_Class.cuda()
@@ -167,6 +161,23 @@ gen_iterations = 0
 for epoch in range(opt.niter):
     data_iter = iter(trainloader)
     i = 0
+
+    # Initialize losses
+    lossD = 0.0
+    lossD_Class = 0.0
+    total_lossD_Class_real = 0.0
+    total_lossD_Class_gen = 0.0
+    lossD_Dist = 0.0
+    total_lossD_Dist_real = 0.0
+    total_lossD_Dist_gen = 0.0
+    lossG = 0.0
+    total_lossG_Class = 0.0
+    total_lossG_Dist = 0.0
+    total_lossG_CE = 0.0
+    lossC = 0.0
+    total_lossC_CE_real = 0.0
+    total_lossC_CE_gen = 0.0
+
     while i < len(trainloader):
 
         ############################
@@ -227,26 +238,28 @@ for epoch in range(opt.niter):
             output_1 = netD_Class(trainrealimages, onehottrainreallabels)
             # train with real
             if opt.kldiv:
-                errD_Class_real = BCELoss(output_1, label_1)
+                lossD_Class_real = BCELoss(output_1, label_1)
             else:
-                errD_Class_real = output_1.mean()
-            errD_Class_real.backward(mone)
+                lossD_Class_real = output_1.mean()
+            lossD_Class_real.backward(mone)
 
             # train with generated
             traingenimages = netG(trainrealimages)
             output_0 = netD_Class(traingenimages, onehottrainreallabels)
             if opt.kldiv:
-                errD_Class_gen = BCELoss(output_0, label_1)
+                lossD_Class_gen = BCELoss(output_0, label_1)
             else:
-                errD_Class_gen = output_0.mean()
-            errD_Class_gen.backward(one)
+                lossD_Class_gen = output_0.mean()
+            lossD_Class_gen.backward(one)
 
             # train with unlabeled
             # complete with unlabeled label
 
-            #errD_unlabeled = netD_Class(traingenimages, trainreallabels)
-            #errD_unlabeled.backward(mone)
-            errD_Class += - errD_Class_real + errD_Class_gen #- errD_unlabeled
+            #lossD_unlabeled = netD_Class(traingenimages, trainreallabels)
+            #lossD_unlabeled.backward(mone)
+            total_lossD_Class_real += - lossD_Class_real.data[0]
+            total_lossD_Class_gen += lossD_Class_gen.data[0]
+            lossD_Class += total_lossD_Class_real + total_lossD_Class_gen #- lossD_unlabeled
             optimizerD_Class.step()
 
             #############################
@@ -270,21 +283,26 @@ for epoch in range(opt.niter):
 
             outpout = netD_Dist(trainrealimages, reftrainimages)
             if opt.kldiv:
-                errD_Dist_real = BCELoss(outpout, label_1)
+                lossD_Dist_real = BCELoss(outpout, label_1)
             else:
-                errD_Dist_real = outpout.mean()
-            errD_Dist_real.backward(mone)
+                lossD_Dist_real = outpout.mean()
+            lossD_Dist_real.backward(mone)
 
             # Maximize distance between input sample and generated sample
             outpout = netD_Dist(trainrealimages, traingenimages)
             if opt.kldiv:
-                errD_Dist_gen = BCELoss(outpout, label_1)
+                lossD_Dist_gen = BCELoss(outpout, label_1)
             else:
-                errD_Dist_gen = outpout.mean()
-            errD_Dist_gen.backward(one)
+                lossD_Dist_gen = outpout.mean()
+            lossD_Dist_gen.backward(one)
 
-            errD_Dist += - errD_Dist_real + errD_Dist_gen
+            # Loss
+            total_lossD_Dist_real += - lossD_Dist_real.data[0]
+            total_lossD_Dist_gen += lossD_Dist_gen.data[0]
+            lossD_Dist += total_lossD_Dist_real + total_lossD_Dist_gen
             optimizerD_Dist.step()
+
+            lossD += lossD_Class + lossD_Dist
 
         ############################
         # (2) Update G network
@@ -303,31 +321,34 @@ for epoch in range(opt.niter):
         output_0 = netD_Class(traingenimages, onehottrainreallabels)
         # True/Fake Loss
         if opt.kldiv:
-           errG_class = BCELoss(output_0, label_1)
+           lossG_Class = BCELoss(output_0, label_1)
         else:
-           errG_class = output_0.mean()
-        errG_class.backward(mone, retain_graph=True)
+           lossG_Class = output_0.mean()
+        lossG_Class.backward(mone, retain_graph=True)
 
-#        errG_dist = imageDist(traingenimages.view(traingenimages.size(0), -1), reftrainimages.view(traingenimages.size(0), -1)).mean()
+#        lossG_Dist = imageDist(traingenimages.view(traingenimages.size(0), -1), reftrainimages.view(traingenimages.size(0), -1)).mean()
         output_1 = netD_Dist(trainrealimages, traingenimages)
         # True/Fake Loss
         if opt.kldiv:
-            errG_dist = BCELoss(output_1, label_1)
+            lossG_Dist = BCELoss(output_1, label_1)
         else:
-            errG_dist= output_1.mean()
-        errG_dist.backward(mone, retain_graph=True)
-        # Mutual information loss term
+            lossG_Dist= output_1.mean()
+        lossG_Dist.backward(mone, retain_graph=True)
+        # Label cross entropy  loss term
         logitsgenlabels = netC(traingenimages)
         maskedlogitsgenlabels = nn.functional.softmax(logitsgenlabels, dim=1).mul(onehottrainreallabels).sum(dim=1)
         if opt.kldiv:
-            errG_mutinfo = BCELoss(maskedlogitsgenlabels, label_1)
+            lossG_CE = BCELoss(maskedlogitsgenlabels, label_1)
         else:
-            errG_mutinfo = maskedlogitsgenlabels.mean()
-        errG_mutinfo.backward(one)
+            lossG_CE = maskedlogitsgenlabels.mean()
+        lossG_CE.backward(one)
 
         # Loss
-        # errG = - errG_gen - errG_dist - errG_mutinfo
-        errG += - errG_class - errG_dist + errG_mutinfo
+        total_lossG_Class += - lossG_Class.data[0]
+        total_lossG_Dist += - lossG_Dist.data[0]
+        total_lossG_CE += lossG_CE.data[0]
+        lossG += total_lossG_Class + total_lossG_Dist + total_lossG_CE
+
         optimizerG.step()
 
         ############################
@@ -356,8 +377,8 @@ for epoch in range(opt.niter):
             nbcorrectlabel += predclassrealtrain.eq(trainreallabels.data.view_as(predclassrealtrain)).sum()
             totalnblabels += trainreallabels.size(0)
             trainacc = 100 * nbcorrectlabel / totalnblabels
-        errC_CE_real = CELoss(predtrainreallabels, trainreallabels)
-        errC_CE_real.backward(one)
+        lossC_CE_real = CELoss(predtrainreallabels, trainreallabels)
+        lossC_CE_real.backward(one)
 
         # train with fake
         #if epoch > 100:
@@ -376,23 +397,20 @@ for epoch in range(opt.niter):
         #        selectedtraingenlabel[i] = trainreallabels[i]
         predtraingenlabels = netC(traingenimages)
             # Compute train loss
-        errC_CE_gen = CELoss(predtraingenlabels, trainreallabels)
-        errC_CE_gen.backward(one)
-        #else:
-        #    errC_CE_gen = Variable(torch.zeros(1).float())
-        #    if opt.cuda:
-        #        errC_CE_gen = errC_CE_gen.cuda()
-        errC += errC_CE_real + errC_CE_gen
-        #else:
-        #    errC = errC_CE_real
+        lossC_CE_gen = CELoss(predtraingenlabels, trainreallabels)
+        lossC_CE_gen.backward(one)
+
         #train with unlabeled
         # trainunldata??
         #predunllabels = netC(trainunldata)
-        #errC_unlabeled = netD_Class(trainunldata, predunllabels)
-        #errC_CE_unlabeled.backward(one)
+        #lossC_unlabeled = netD_Class(trainunldata, predunllabels)
+        #lossC_CE_unlabeled.backward(one)
 
         # Loss
-        # errC = errC_CE_real + errC_CE_gen #+ errC_CE_unlabeled
+        total_lossC_CE_real += lossC_CE_real.data[0]
+        total_lossC_CE_gen += lossC_CE_gen.data[0]
+        lossC += total_lossC_CE_real + total_lossC_CE_gen #+ lossC_CE_unlabeled
+
         optimizerC.step()
 
         gen_iterations += 1
@@ -425,17 +443,11 @@ for epoch in range(opt.niter):
 
         #if epoch > 100:
             # Print loss on screen for monitoring
-        loss = '[{0}/{1}][{2}/{3}][{4}] Loss_D_Class: {5} Loss_D_Class_real: {6} Loss_D_Class_gen {7} \
-                Loss_D_Dist: {8} Loss_D_Dist_real: {9} Loss_D_Dist_gen {10} \
-                Loss_G: {11} Loss_G_class: {12} Loss_G_dist: {13} Loss_G_prob_class: {14} \
-                Loss_C: {15} Loss_C_real: {16} Loss_C_gen {17} \
-                Trainacc {18} Valacc {19}'.format(
+        loss = '[{0}/{1}][{2}/{3}][{4}] lossD: {5} lossD_Class: {6} lossD_Dist {7} lossG: {8} lossG_Class: {9} lossG_Dist: {10} lossG_CE: {11} lossC: {12} lossC_CE_real: {13} lossC_CE_gen {14} trainacc {15} valacc {16}'.format(
             epoch, opt.niter, i, len(trainloader), gen_iterations,
-            errD_Class.data[0], errD_Class_real.data[0], errD_Class_gen.data[0],
-            errD_Dist.data[0], errD_Dist_real.data[0], errD_Dist_gen.data[0],
-            #errG.data[0], errG_gen.data[0], errG_dist.data[0], errG_mutinfo.data[0],
-            errG.data[0], errG_class.data[0], errG_dist.data[0],errG_mutinfo.data[0],
-            errC.data[0], errC_CE_real.data[0], errC_CE_gen.data[0],
+            lossD, lossD_Class, lossD_Dist,
+            lossG, total_lossG_Class, total_lossG_Dist,total_lossG_CE,
+            lossC, total_lossC_CE_real, total_lossC_CE_gen,
             trainacc, valacc)
         print(loss)
 
@@ -447,10 +459,10 @@ for epoch in range(opt.niter):
             # Print loss on screen for monitoring
         #    loss = '[{0}/{1}][{2}/{3}][{4}] Loss_D: {5} Loss_D_real: {6} Loss_D_aug {7} Loss_G: {8} Loss_G_gen: {9} Loss_G_dist: {10} Loss_G_mutinfo: {11} Loss_C: {12} Loss_C_real: {13} Loss_C_gen 0 Trainacc {14} Valacc {15}'.format(
         #        epoch, opt.niter, i, len(trainloader), gen_iterations,
-        #        errD.data[0], errD_real.data[0], errD_gen.data[0],
-        #        #errG.data[0], errG_gen.data[0], errG_dist.data[0], errG_mutinfo.data[0],
-        #        errG.data[0], errG_gen.data[0], errG_dist.data[0], "0",
-        #        errC.data[0], errC_CE_real.data[0],
+        #        lossD.data[0], lossD_real.data[0], lossD_gen.data[0],
+        #        #lossG.data[0], lossG_gen.data[0], lossG_Dist.data[0], lossG_CE.data[0],
+        #        lossG.data[0], lossG_gen.data[0], lossG_Dist.data[0], "0",
+        #        lossC.data[0], lossC_CE_real.data[0],
         #        trainacc, valacc)
         #    print(loss)
 
