@@ -8,18 +8,18 @@ class D_Class(nn.Module):
 
         inputimage = nn.Sequential()
         # input is nc x isize x isize
-        inputimage.add_module('inputimage.conv.{0}-{1}'.format(nc, ndf),
+        inputimage.add_module('inputimage_conv_{0}_{1}'.format(nc, ndf),
                         nn.Conv2d(nc, ndf, 4, 2, 1, bias=False))
-        inputimage.add_module('inputimage.relu.{0}'.format(ndf),
-                        nn.LeakyReLU(0.2, inplace=True))
+        inputimage.add_module('inputimage_relu_{0}'.format(ndf),
+                        nn.LeakyReLU(0.2))
         self.inputimage = inputimage
 
         inputlabel= nn.Sequential()
         # input is 1 x nclass
-        inputlabel.add_module('inputlabel.deconv.{0}-{1}'.format(nclass, ndf),
+        inputlabel.add_module('inputlabel_deconv_{0}_{1}'.format(nclass, ndf),
                         nn.ConvTranspose2d(nclass, ndf, 16, 1, 0, bias=False))
-        inputlabel.add_module('inputlabel.relu.{0}'.format(ndf),
-                        nn.LeakyReLU(0.2, inplace=True))
+        inputlabel.add_module('inputlabel_relu_{0}'.format(ndf),
+                        nn.LeakyReLU(0.2))
         self.inputlabel = inputlabel
 
         csize, cndf = isize / 2, ndf * 2
@@ -27,22 +27,22 @@ class D_Class(nn.Module):
         while csize > 4:
             in_feat = cndf
             out_feat = cndf * 2
-            layers.add_module('pyramid.{0}-{1}.conv'.format(in_feat, out_feat),
+            layers.add_module('pyramid_{0}_{1}_conv'.format(in_feat, out_feat),
                             nn.Conv2d(in_feat, out_feat, 4, 2, 1, bias=False))
 #            layers.add_module('pyramid.{0}.instancenorm'.format(out_feat),
 #                            nn.InstanceNorm2d(out_feat))
-            layers.add_module('pyramid.{0}.relu'.format(out_feat),
-                            nn.LeakyReLU(0.2, inplace=True))
+            layers.add_module('pyramid_{0}_relu'.format(out_feat),
+                            nn.LeakyReLU(0.2))
             cndf = cndf * 2
             csize = csize / 2
 
-        layers.add_module('pyramid.{0}.{1}.dropout'.format(out_feat, out_feat),
-                      nn.Dropout2d(p=0.5, inplace=True))
+        layers.add_module('pyramid_{0}_{1}_dropout'.format(out_feat, out_feat),
+                      nn.Dropout2d(p=0.5))
         self.layers = layers
 
         # state size. K x 4 x 4
         final = nn.Sequential()
-        final.add_module('final.{0}-{1}.conv'.format(cndf, 1),
+        final.add_module('final_{0}_{1}_conv'.format(cndf, 1),
                         nn.Conv2d(cndf, 1, 4, 1, 0, bias=False))
         self.final = final
 
@@ -62,10 +62,10 @@ class D_Dist(nn.Module):
 
         inputimage = nn.Sequential()
         # input is nc x isize x isize
-        inputimage.add_module('inputimage.conv.{0}-{1}'.format(nc, ndf),
+        inputimage.add_module('inputimage_conv_{0}_{1}'.format(nc, ndf),
                              nn.Conv2d(nc, ndf, 4, 2, 1, bias=False))
-        inputimage.add_module('inputimage.relu.{0}'.format(ndf),
-                             nn.LeakyReLU(0.2, inplace=True))
+        inputimage.add_module('inputimage_relu_{0}'.format(ndf),
+                             nn.LeakyReLU(0.2))
         self.inputimage = inputimage
 
         layers = nn.Sequential()
@@ -73,22 +73,21 @@ class D_Dist(nn.Module):
         while csize > 4:
             in_feat = cndf
             out_feat = cndf * 2
-            layers.add_module('pyramid.{0}-{1}.conv'.format(in_feat, out_feat),
+            layers.add_module('pyramid_{0}_{1}_conv'.format(in_feat, out_feat),
                                 nn.Conv2d(in_feat, out_feat, 4, 2, 1, bias=False))
 #            layers.add_module('pyramid.{0}.batchnorm'.format(out_feat),
 #                                nn.InstanceNorm2d(out_feat))
-            layers.add_module('pyramid.{0}.relu'.format(out_feat),
-                                nn.LeakyReLU(0.2, inplace=True))
+            layers.add_module('pyramid_{0}_relu'.format(out_feat),
+                                nn.LeakyReLU(0.2))
             cndf = cndf * 2
             csize = csize / 2
-        layers.add_module('pyramid.{0}.{1}.dropout'.format(out_feat, out_feat),
-                      nn.Dropout2d
-                      (p=0.5, inplace=True))
+        layers.add_module('pyramid_{0}_{1}_dropout'.format(out_feat, out_feat),
+                      nn.Dropout2d(p=0.5))
         self.layers = layers
 
         # state size. K x 4 x 4
         final = nn.Sequential()
-        final.add_module('final.{0}-{1}.conv'.format(cndf, 1),
+        final.add_module('final_{0}_{1}_conv'.format(cndf, 1),
                          nn.Conv2d(cndf, 1, 4, 1, 0, bias=False))
         self.final = final
 
