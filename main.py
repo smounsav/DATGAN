@@ -192,8 +192,9 @@ for epoch in range(opt.niter):
             i += 1
 
             # clamp parameters to a cube
-            #for p in netD_Class.parameters():
-            #    p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
+            if not opt.kldiv:
+                for p in netD_Class.parameters():
+                    p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
 
             try:
                 data = data_iter.next()
