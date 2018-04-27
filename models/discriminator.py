@@ -36,16 +36,16 @@ class D_Class(nn.Module):
             cndf = cndf * 2
             csize = csize / 2
 
-#        features.add_module('pyramid.{0}.{1}.dropout'.format(out_feat, out_feat),
-#                      nn.Dropout(p=0.5, inplace=True))
+        features.add_module('pyramid.{0}.{1}.dropout'.format(out_feat, out_feat),
+                      nn.Dropout2d(p=0.5, inplace=True))
         self.features = features
 
         # state size. K x 4 x 4
         final = nn.Sequential()
         final.add_module('final.{0}-{1}.conv'.format(cndf, 1),
                         nn.Conv2d(cndf, 1, 4, 1, 0, bias=False))
-        final.add_module('final.{0}.{1}.dropout'.format(cndf * 4 * 4, 1),
-                      nn.Dropout(p=0.5, inplace=True))
+        #final.add_module('final.{0}.{1}.dropout'.format(cndf * 4 * 4, 1),
+#                      nn.Dropout(p=0.5, inplace=True))
 
 #        final.add_module('final sigmoid',
 #                         nn.Sigmoid())
@@ -84,16 +84,17 @@ class D_Dist(nn.Module):
                                 nn.LeakyReLU(0.2, inplace=True))
             cndf = cndf * 2
             csize = csize / 2
-#        features.add_module('pyramid.{0}.{1}.dropout'.format(out_feat, out_feat),
-#                      nn.Dropout(p=0.5, inplace=True))
+        features.add_module('pyramid.{0}.{1}.dropout'.format(out_feat, out_feat),
+                      nn.Dropout2d
+                      (p=0.5, inplace=True))
         self.features = features
 
         # state size. K x 4 x 4
         final = nn.Sequential()
         final.add_module('final.{0}-{1}.conv'.format(cndf * 2, 1),
                          nn.Conv2d(cndf * 2, 1, 4, 1, 0, bias=False))
-        final.add_module('final.{0}.{1}.dropout'.format(cndf * 2 * 4 * 4, 1),
-                      nn.Dropout(p=0.5  , inplace=True))
+#        final.add_module('final.{0}.{1}.dropout'.format(cndf * 2 , 1),
+#                      nn.Dropout(p=0.5  , inplace=True))
 
         #        final.add_module('final sigmoid',
         #                         nn.Sigmoid())
