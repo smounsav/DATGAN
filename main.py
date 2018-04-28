@@ -32,8 +32,8 @@ parser.add_argument('--lrC', type=float, default=0.00005, help='learning rate fo
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--cuda'  , action='store_true', help='enables cuda')
 parser.add_argument('--netG', default='', help="path to netG (to continue training)")
-parser.add_argument('--netD_Class', default='', help="path to netD_Class (to continue training)")
-parser.add_argument('--netD_Dist', default='', help="path to netD_Dist (to continue training)")
+parser.add_argument('--netDClass', default='', help="path to netDClass (to continue training)")
+parser.add_argument('--netDDist', default='', help="path to netDDist (to continue training)")
 parser.add_argument('--netC', default='', help="path to netC (to continue training)")
 parser.add_argument('--clamp_lower', type=float, default=-0.05)
 parser.add_argument('--clamp_upper', type=float, default=0.05)
@@ -86,7 +86,7 @@ ndf = int(opt.ndf)
 ncf = int(opt.ncf)
 nc = int(opt.nc)
 
-# custom weights initialization called on netG and netD_Class
+# custom weights initialization called on netG and netDClass
 def weights_init(m):
     classname = m.__class__.__name__
     if classname.find('Conv') != -1:
@@ -100,10 +100,10 @@ def weights_init(m):
 
 # Model initialisation
 # Discriminator
-netD_Class = discriminator_model.D_Class(opt.imageSize, nc, ndf, nclasses).to(device)
-netD_Class.apply(weights_init)
-netD_Dist = discriminator_model.D_Dist(opt.imageSize, nc, ndf).to(device)
-netD_Dist.apply(weights_init)
+netDClass = discriminator_model.DClass(opt.imageSize, nc, ndf, nclasses).to(device)
+netDClass.apply(weights_init)
+netDDist = discriminator_model.DDist(opt.imageSize, nc, ndf).to(device)
+netDDist.apply(weights_init)
 # Generator
 netG = generator_model.UNet(nc,nc).to(device)
 netG.apply(weights_init)
@@ -112,17 +112,17 @@ netC = classifier_model.cnnClass(nc, ncf).to(device)
 netC.apply(weights_init)
 
 # Load model checkpoint if needed
-if opt.netD_Class != '':
-    netD_Class.load_state_dict(torch.load(opt.netD_Class))
-print(netD_Class)
-if opt.netD_Dist != '':
-    netD_Dist.load_state_dict(torch.load(opt.netD_Dist))
-print(netD_Dist)
+if opt.netDClass != '':
+    netDClass.load_state_dict(torch.load(opt.netDClass))
+print(netDClass)
+if opt.netDDist != '':
+    netDDist.load_state_dict(torch.load(opt.netDDist))
+print(netDDist)
 if opt.netG != '':
     netG.load_state_dict(torch.load(opt.netG))
 print(netG)
 if opt.netC != '':
-    netD_Class.load_state_dict(torch.load(opt.netC))
+    netDClass.load_state_dict(torch.load(opt.netC))
 print(netC)
 
 # define helpers for optimisation
@@ -131,13 +131,13 @@ mone = one * -1
 
 # setup optimizer
 if opt.adam:
-    optimizerD_Class = optim.Adam(netD_Class.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.999))
-    optimizerD_Dist = optim.Adam(netD_Dist.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.999))
+    optimizerDClass = optim.Adam(netDClass.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.999))
+    optimizerDDist = optim.Adam(netDDist.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.999))
     optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG, betas=(opt.beta1, 0.999))
     optimizerC = optim.Adam(netC.parameters(), lr=opt.lrC, betas=(opt.beta1, 0.999))
 else:
-    optimizerD_Class = optim.RMSprop(netD_Class.parameters(), lr=opt.lrD)
-    optimizerD_Dist = optim.RMSprop(netD_Dist.parameters(), lr=opt.lrD)
+    optimizerDClass = optim.RMSprop(netDClass.parameters(), lr=opt.lrD)
+    optimizerDDist = optim.RMSprop(netDDist.parameters(), lr=opt.lrD)
     optimizerG = optim.RMSprop(netG.parameters(), lr=opt.lrG)
     optimizerC = optim.RMSprop(netC.parameters(), lr=opt.lrC)
 
@@ -153,12 +153,12 @@ for epoch in range(opt.niter):
 
     # Initialize losses
     lossD = 0.0
-    lossD_Class = 0.0
-    total_lossD_Class_real = 0.0
-    total_lossD_Class_gen = 0.0
-    lossD_Dist = 0.0
-    total_lossD_Dist_real = 0.0
-    total_lossD_Dist_gen = 0.0
+    lossDClass = 0.0
+    total_lossDClass_real = 0.0
+    total_lossDClass_gen = 0.0
+    lossDDist = 0.0
+    total_lossDDist_real = 0.0
+    total_lossDDist_gen = 0.0
     lossG = 0.0
     total_lossG_Class = 0.0
     total_lossG_Dist = 0.0
@@ -172,9 +172,9 @@ for epoch in range(opt.niter):
         ############################
         # (1) Update D network
         ###########################
-        for p in netD_Class.parameters():
+        for p in netDClass.parameters():
             p.requires_grad = True
-        for p in netD_Dist.parameters():
+        for p in netDDist.parameters():
             p.requires_grad = True
         for p in netG.parameters(): # to avoid computation
             p.requires_grad = False
@@ -193,7 +193,7 @@ for epoch in range(opt.niter):
 
             # clamp parameters to a cube if using Wasserstein distance optimisation
             if not opt.kldiv:
-                for p in netD_Class.parameters():
+                for p in netDClass.parameters():
                     p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
 
             data = data_iter.next()
@@ -213,42 +213,42 @@ for epoch in range(opt.niter):
             onehottrainreallabels = onehotlabelssupport.scatter_(1,trainreallabels.unsqueeze(1), 1)
 
             ##############################
-            # (1.1) Update D_Class network
+            # (1.1) Update DClass network
             ##############################
-            netD_Class.zero_grad()
+            netDClass.zero_grad()
 
-            output_1 = netD_Class(trainrealimages, onehottrainreallabels)
+            output_1 = netDClass(trainrealimages, onehottrainreallabels)
             # train with real
             if opt.kldiv:
-                lossD_Class_real = BCELoss(output_1, label_1)
+                lossDClass_real = BCELoss(output_1, label_1)
             else:
-                lossD_Class_real = output_1.mean()
-            lossD_Class_real.backward(mone)
+                lossDClass_real = output_1.mean()
+            lossDClass_real.backward(mone)
 
             # train with generated
             traingenimages = netG(trainrealimages)
-            output_0 = netD_Class(traingenimages, onehottrainreallabels)
+            output_0 = netDClass(traingenimages, onehottrainreallabels)
             if opt.kldiv:
-                lossD_Class_gen = BCELoss(output_0, label_1)
+                lossDClass_gen = BCELoss(output_0, label_1)
             else:
-                lossD_Class_gen = output_0.mean()
-            lossD_Class_gen.backward(one, retain_graph=True)
+                lossDClass_gen = output_0.mean()
+            lossDClass_gen.backward(one, retain_graph=True)
 
             # train with unlabeled
             # complete with unlabeled label
 
-            #lossD_unlabeled = netD_Class(traingenimages, trainreallabels)
+            #lossD_unlabeled = netDClass(traingenimages, trainreallabels)
             #lossD_unlabeled.backward(mone)
 
-            total_lossD_Class_real += - lossD_Class_real.item()
-            total_lossD_Class_gen += lossD_Class_gen.item()
-            lossD_Class += total_lossD_Class_real + total_lossD_Class_gen #- lossD_unlabeled
-            optimizerD_Class.step()
+            total_lossDClass_real += - lossDClass_real.item()
+            total_lossDClass_gen += lossDClass_gen.item()
+            lossDClass += total_lossDClass_real + total_lossDClass_gen #- lossD_unlabeled
+            optimizerDClass.step()
 
             #############################
-            # (1.2) Update D_Dist network
+            # (1.2) Update DDist network
             #############################
-            netD_Dist.zero_grad()
+            netDDist.zero_grad()
 
             # Minimize distance between input sample and a sample from same class
             reftrainimages = trainrealimages.clone()
@@ -263,34 +263,34 @@ for epoch in range(opt.niter):
                         found = True
                         reftrainimages[i] = selected_image
 
-            output_dist_1 = netD_Dist(trainrealimages, reftrainimages)
+            output_dist_1 = netDDist(trainrealimages, reftrainimages)
             if opt.kldiv:
-                lossD_Dist_real = BCELoss(output_dist_1, label_1)
+                lossDDist_real = BCELoss(output_dist_1, label_1)
             else:
-                lossD_Dist_real = output_dist_1.mean()
-            lossD_Dist_real.backward(mone, retain_graph=True)
+                lossDDist_real = output_dist_1.mean()
+            lossDDist_real.backward(mone, retain_graph=True)
             # Maximize distance between input sample and generated sample
-            output_dist_0 = netD_Dist(trainrealimages, traingenimages)
+            output_dist_0 = netDDist(trainrealimages, traingenimages)
             if opt.kldiv:
-                lossD_Dist_gen = BCELoss(output_dist_0, label_1)
+                lossDDist_gen = BCELoss(output_dist_0, label_1)
             else:
-                lossD_Dist_gen = output_dist_0.mean()
-            lossD_Dist_gen.backward(one)
+                lossDDist_gen = output_dist_0.mean()
+            lossDDist_gen.backward(one)
 
             # Loss
-            total_lossD_Dist_real += - lossD_Dist_real.item()
-            total_lossD_Dist_gen += lossD_Dist_gen.item()
-            lossD_Dist += total_lossD_Dist_real + total_lossD_Dist_gen
-            optimizerD_Dist.step()
+            total_lossDDist_real += - lossDDist_real.item()
+            total_lossDDist_gen += lossDDist_gen.item()
+            lossDDist += total_lossDDist_real + total_lossDDist_gen
+            optimizerDDist.step()
 
-            lossD += lossD_Class + lossD_Dist
+            lossD += lossDClass + lossDDist
 
         ############################
         # (2) Update G network
         ###########################
-        for p in netD_Dist.parameters():
+        for p in netDDist.parameters():
             p.requires_grad = False # to avoid computation
-        for p in netD_Class.parameters():
+        for p in netDClass.parameters():
             p.requires_grad = False # to avoid computation
         for p in netG.parameters():
             p.requires_grad = True
@@ -299,7 +299,7 @@ for epoch in range(opt.niter):
 
         netG.zero_grad()
         traingenimages = netG(trainrealimages)
-        output_0 = netD_Class(traingenimages, onehottrainreallabels)
+        output_0 = netDClass(traingenimages, onehottrainreallabels)
         # True/Fake Loss
         if opt.kldiv:
            lossG_Class = BCELoss(output_0, label_1)
@@ -307,7 +307,7 @@ for epoch in range(opt.niter):
            lossG_Class = output_0.mean()
         lossG_Class.backward(mone, retain_graph=True)
         # Distance loss
-        output_1 = netD_Dist(trainrealimages, traingenimages)
+        output_1 = netDDist(trainrealimages, traingenimages)
         if opt.kldiv:
             lossG_Dist = BCELoss(output_1, label_1)
         else:
@@ -333,9 +333,9 @@ for epoch in range(opt.niter):
         ############################
         # (3) Update C network
         ###########################
-        for p in netD_Dist.parameters():
+        for p in netDDist.parameters():
             p.requires_grad = False # to avoid computation
-        for p in netD_Class.parameters():
+        for p in netDClass.parameters():
             p.requires_grad = False # to avoid computation
         for p in netG.parameters():
             p.requires_grad = False # to avoid computation
@@ -370,7 +370,7 @@ for epoch in range(opt.niter):
         #train with unlabeled
         # trainunldata??
         #predunllabels = netC(trainunldata)
-        #lossC_unlabeled = netD_Class(trainunldata, predunllabels)
+        #lossC_unlabeled = netDClass(trainunldata, predunllabels)
         #lossC_CE_unlabeled.backward(one)
 
         # Loss
@@ -411,9 +411,9 @@ for epoch in range(opt.niter):
 
         #if epoch > 100:
             # Print loss on screen for monitoring
-        loss = '[{0}/{1}][{2}/{3}][{4}] lossD: {5} lossD_Class: {6} lossD_Dist {7} lossG: {8} lossG_Class: {9} lossG_Dist: {10} lossG_CE: {11} lossC: {12} lossC_CE_real: {13} lossC_CE_gen {14} trainacc {15} valacc {16}'.format(
+        loss = '[{0}/{1}][{2}/{3}][{4}] lossD: {5} lossDClass: {6} lossDDist {7} lossG: {8} lossG_Class: {9} lossG_Dist: {10} lossG_CE: {11} lossC: {12} lossC_CE_real: {13} lossC_CE_gen {14} trainacc {15} valacc {16}'.format(
             epoch, opt.niter, i, len(trainloader), gen_iterations,
-            lossD, lossD_Class, lossD_Dist,
+            lossD, lossDClass, lossDDist,
             lossG, total_lossG_Class, total_lossG_Dist,total_lossG_CE,
             lossC, total_lossC_CE_real, total_lossC_CE_gen,
             trainacc, valacc)
@@ -435,13 +435,13 @@ for epoch in range(opt.niter):
 
 #    if (epoch % 500 == 0) and (epoch > 0):  # save model every 500 epochs
 #        # save final models
-#        torch.save(netD_Class.state_dict(), '{0}/netD_Class_epoch_{1}.pth'.format(opt.outDir, epoch))
-#        torch.save(netD_Dist.state_dict(), '{0}/netD_Class_epoch_{1}.pth'.format(opt.outDir, epoch))
+#        torch.save(netDClass.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
+#        torch.save(netDDist.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
 #        torch.save(netG.state_dict(), '{0}/netG_epoch_{1}.pth'.format(opt.outDir, epoch))
-#        torch.save(netC.state_dict(), '{0}/netD_Class_epoch_{1}.pth'.format(opt.outDir, epoch))
+#        torch.save(netC.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
 
 # save final models
-torch.save(netD_Class.state_dict(), '{0}/netD_Class_epoch_{1}.pth'.format(opt.outDir, epoch))
-torch.save(netD_Dist.state_dict(), '{0}/netD_Dist_epoch_{1}.pth'.format(opt.outDir, epoch))
+torch.save(netDClass.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
+torch.save(netDDist.state_dict(), '{0}/netDDist_epoch_{1}.pth'.format(opt.outDir, epoch))
 torch.save(netG.state_dict(), '{0}/netG_epoch_{1}.pth'.format(opt.outDir, epoch))
-torch.save(netC.state_dict(), '{0}/netD_Class_epoch_{1}.pth'.format(opt.outDir, epoch))
+torch.save(netC.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
