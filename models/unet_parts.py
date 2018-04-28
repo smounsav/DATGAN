@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class double_conv(nn.Module):
     '''(conv => BN => ReLU) * 2'''
     def __init__(self, in_ch, out_ch):
@@ -26,13 +25,16 @@ class double_conv(nn.Module):
 
 
 class inconv(nn.Module):
-    def __init__(self, in_ch, out_ch):
+    def __init__(self, in_ch, out_ch, nz):
         super(inconv, self).__init__()
-        self.conv = double_conv(in_ch, out_ch)
+        self.conv = double_conv(in_ch, int(out_ch / 2))
+        self.project = nn.ConvTranspose2d(nz, int(out_ch / 2), 32, 1, 0, bias=False)
 
-    def forward(self, x):
+    def forward(self, x, z):
         x = self.conv(x)
-        return x
+        noise = self.project(z)
+        output = torch.cat([x, noise], dim=1)
+        return output
 
 
 class down(nn.Module):

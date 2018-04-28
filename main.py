@@ -22,6 +22,7 @@ parser.add_argument('--workers', type=int, help='number of data loading workers'
 parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
 parser.add_argument('--imageSize', type=int, default=32, help='the height / width of the input image to network')
 parser.add_argument('--nc', type=int, default=3, help='input image channels')
+parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
 parser.add_argument('--ngf', type=int, default=64, help='final number of filters generator')
 parser.add_argument('--ndf', type=int, default=64, help='initial number of filters discriminator')
 parser.add_argument('--ncf', type=int, default=64, help='initial number of filters classifier')
@@ -81,6 +82,7 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=opt.batchSize,
                                          shuffle=False, num_workers=opt.workers)
 print(len(testloader))
 
+nz = int(opt.nz)
 ngf = int(opt.ngf)
 ndf = int(opt.ndf)
 ncf = int(opt.ncf)
@@ -105,7 +107,7 @@ netDClass.apply(weights_init)
 netDDist = discriminator_model.DDist(opt.imageSize, nc, ndf).to(device)
 netDDist.apply(weights_init)
 # Generator
-netG = generator_model.UNet(nc,nc).to(device)
+netG = generator_model.UNet(nc,nc,nz).to(device)
 netG.apply(weights_init)
 # Classifier
 netC = classifier_model.cnnClass(nc, ncf).to(device)
@@ -203,7 +205,7 @@ for epoch in range(opt.niter):
             batch_size = trainrealimages.size(0)
             trainrealimages =  trainrealimages.requires_grad_().to(device)
             trainreallabels = trainreallabels.requires_grad_().to(device)
-
+            noise = torch.FloatTensor(opt.batchSize, nz, 1, 1).requires_grad_().to(device)
             if opt.kldiv:
                 label_1 = torch.FloatTensor(batch_size).fill_(1).to(device)
                 #label_1.requires_grad_()
@@ -226,7 +228,7 @@ for epoch in range(opt.niter):
             lossDClass_real.backward(mone)
 
             # train with generated
-            traingenimages = netG(trainrealimages)
+            traingenimages = netG(trainrealimages, noise)
             output_0 = netDClass(traingenimages, onehottrainreallabels)
             if opt.kldiv:
                 lossDClass_gen = BCELoss(output_0, label_1)
@@ -298,7 +300,7 @@ for epoch in range(opt.niter):
             p.requires_grad = False # to avoid computation
 
         netG.zero_grad()
-        traingenimages = netG(trainrealimages)
+        traingenimages = netG(trainrealimages, noise)
         output_0 = netDClass(traingenimages, onehottrainreallabels)
         # True/Fake Loss
         if opt.kldiv:
@@ -361,7 +363,7 @@ for epoch in range(opt.niter):
         lossC_CE_real.backward(one)
 
         # train with fake
-        traingenimages = netG(trainrealimages)
+        traingenimages = netG(trainrealimages, noise)
         predtraingenlabels = netC(traingenimages)
         # Compute train loss
         lossC_CE_gen = CELoss(predtraingenlabels, trainreallabels)

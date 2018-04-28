@@ -6,9 +6,9 @@ from .unet_parts import *
 
 
 class UNet(nn.Module):
-    def __init__(self, n_channels, n_classes):
+    def __init__(self, n_channels_in, n_channels_out, nz):
         super(UNet, self).__init__()
-        self.inc = inconv(n_channels, 64)
+        self.inc = inconv(n_channels_in, 64, nz)
         self.down1 = down(64, 128)
         self.down2 = down(128, 256)
         self.down3 = down(256, 512)
@@ -17,10 +17,10 @@ class UNet(nn.Module):
         self.up2 = up(512, 256)
         self.up3 = up(256, 128)
         self.up4 = up(128, 64)
-        self.outc = outconv(64, n_classes)
+        self.outc = outconv(64, n_channels_out)
 
-    def forward(self, x):
-        x1 = self.inc(x)
+    def forward(self, x, z):
+        x1 = self.inc(x, z)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
         x4 = self.down3(x3)
