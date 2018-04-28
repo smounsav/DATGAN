@@ -206,6 +206,8 @@ for epoch in range(opt.niter):
             trainrealimages =  trainrealimages.requires_grad_().to(device)
             trainreallabels = trainreallabels.requires_grad_().to(device)
             noise = torch.FloatTensor(opt.batchSize, nz, 1, 1).requires_grad_().to(device)
+            noise.normal_(0, 1)
+
             if opt.kldiv:
                 label_1 = torch.FloatTensor(batch_size).fill_(1).to(device)
                 #label_1.requires_grad_()
