@@ -17,6 +17,7 @@ import models.classifier as classifier_model
 import models.generator as generator_model
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--dataset', required=True, help='cifar10 | svhn | folder')
 parser.add_argument('--dataroot', required=True, help='path to dataset')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
 parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
@@ -67,15 +68,24 @@ transform=transforms.Compose([
    transforms.ToTensor(),
    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
 
-# define datset and initialise dataloader
-trainset = dset.ImageFolder(root=opt.dataroot + '/train', transform=transform)
-testset = dset.ImageFolder(root=opt.dataroot + '/test', transform=transform)
+
+if opt.dataset in ['folder']:
+    # folder dataset
+    trainset = dset.ImageFolder(root=opt.dataroot + '/train', transform=transform)
+    testset = dset.ImageFolder(root=opt.dataroot + '/test', transform=transform)
+elif opt.dataset == 'cifar10':
+    trainset = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transform)
+    testset = dset.CIFAR10(root=opt.dataroot, train=False, download=True, transform=transform)
+elif opt.dataset == 'svhn':
+    trainset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transform)
+    testset = dset.SVHN(root=opt.dataroot, split='test', download=True, transform=transform)
 
 assert trainset
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=opt.batchSize,
                                           shuffle=True, num_workers=opt.workers)
 print(len(trainloader))
-nclasses = len(trainset.classes)
+# nclasses = len(trainset.classes)
+nclasses = 10
 
 assert testset
 testloader = torch.utils.data.DataLoader(testset, batch_size=opt.batchSize,
