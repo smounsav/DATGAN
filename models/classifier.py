@@ -34,7 +34,7 @@ class cnnClass(nn.Module):
         fc.add_module('linear_{0}_{1}_dropout'.format(out_feat * 4 * 4, 1024),
                       nn.Dropout(p=0.5))
         fc.add_module('linear_{0}_{1}_relu'.format(out_feat * 4 * 4, 1024),
-                        nn.LeakyReLU(0.2, inplace=True))
+                        nn.LeakyReLU(0.2))
         fc.add_module('linear_{0}_{1}'.format(1024, 10),
                         nn.Linear(1024, 10))
         fc.add_module('linear_{0}_{1}_dropout'.format(1024, 10),
