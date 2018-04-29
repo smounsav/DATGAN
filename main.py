@@ -179,7 +179,8 @@ for epoch in range(opt.niter):
     total_lossC_CE_real = 0.0
     total_lossC_CE_gen = 0.0
 
-    while i < len(trainloader):
+    #while i < len(trainloader):
+    for i, data in enumerate(trainloader):
 
         ############################
         # (1) Update D network
@@ -193,111 +194,98 @@ for epoch in range(opt.niter):
         for p in netC.parameters(): # to avoid computation
             p.requires_grad = False
 
-        # train the discriminator Diters times
-        if gen_iterations < 25 or gen_iterations % 500 == 0:
-            Diters = 100
+        # clamp parameters to a cube if using Wasserstein distance optimisation
+        if not opt.kldiv:
+            for p in netDClass.parameters():
+                p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
+
+        # Sample batch of real training images
+        trainrealimages, trainreallabels = data
+        batch_size = trainrealimages.size(0)
+        trainrealimages =  trainrealimages.requires_grad_().to(device)
+        trainreallabels = trainreallabels.requires_grad_().to(device)
+        noise = torch.FloatTensor(batch_size, nz, 1, 1).normal_(0, 1).requires_grad_().to(device)
+
+        if opt.kldiv:
+            label_1 = torch.FloatTensor(batch_size).fill_(1).to(device)
+            #label_1.requires_grad_()
+        # converting labels to one hot encoding form
+        onehotlabelssupport = torch.FloatTensor(batch_size, nclasses).zero_().to(device)
+
+        onehottrainreallabels = onehotlabelssupport.scatter_(1,trainreallabels.unsqueeze(1), 1)
+
+        ##############################
+        # (1.1) Update DClass network
+        ##############################
+        netDClass.zero_grad()
+
+        output_1 = netDClass(trainrealimages, onehottrainreallabels)
+        # train with real
+        if opt.kldiv:
+            lossDClass_real = BCELoss(output_1, label_1)
         else:
-            Diters = opt.Diters
-        j = 0
-        while j < Diters and i < len(trainloader):
-            j += 1
-            i += 1
+            lossDClass_real = output_1.mean()
+        lossDClass_real.backward(mone)
 
-            # clamp parameters to a cube if using Wasserstein distance optimisation
-            if not opt.kldiv:
-                for p in netDClass.parameters():
-                    p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
+        # train with generated
+        traingenimages = netG(trainrealimages, noise)
+        output_0 = netDClass(traingenimages, onehottrainreallabels)
+        if opt.kldiv:
+            lossDClass_gen = BCELoss(output_0, label_1)
+        else:
+            lossDClass_gen = output_0.mean()
+        lossDClass_gen.backward(one, retain_graph=True)
 
-            data = data_iter.next()
+        # train with unlabeled
+        # complete with unlabeled label
 
-            # Sample batch of real training images
-            trainrealimages, trainreallabels = data
-            batch_size = trainrealimages.size(0)
-            trainrealimages =  trainrealimages.requires_grad_().to(device)
-            trainreallabels = trainreallabels.requires_grad_().to(device)
-            noise = torch.FloatTensor(opt.batchSize, nz, 1, 1).requires_grad_().to(device)
-            noise.normal_(0, 1)
+        #lossD_unlabeled = netDClass(traingenimages, trainreallabels)
+        #lossD_unlabeled.backward(mone)
 
-            if opt.kldiv:
-                label_1 = torch.FloatTensor(batch_size).fill_(1).to(device)
-                #label_1.requires_grad_()
-            # converting labels to one hot encoding form
-            onehotlabelssupport = torch.FloatTensor(batch_size, nclasses).zero_().to(device)
+        total_lossDClass_real += - lossDClass_real.item()
+        total_lossDClass_gen += lossDClass_gen.item()
+        lossDClass = total_lossDClass_real + total_lossDClass_gen #- lossD_unlabeled
+        optimizerDClass.step()
 
-            onehottrainreallabels = onehotlabelssupport.scatter_(1,trainreallabels.unsqueeze(1), 1)
+        #############################
+        # (1.2) Update DDist network
+        #############################
+        netDDist.zero_grad()
 
-            ##############################
-            # (1.1) Update DClass network
-            ##############################
-            netDClass.zero_grad()
+        # Minimize distance between input sample and a sample from same class
+        reftrainimages = trainrealimages.clone()
+        for i in range(reftrainimages.size(0)):
+            found = False
+            while not found:
+                index = random.randint(0, len(trainset)-1)
+                selected_image, selected_label = trainset.__getitem__(index)
+                selected_image = selected_image.to(device)
+                selected_image.requires_grad_()
+                if selected_label != trainreallabels.data[i]:
+                    found = True
+                    reftrainimages[i] = selected_image
 
-            output_1 = netDClass(trainrealimages, onehottrainreallabels)
-            # train with real
-            if opt.kldiv:
-                lossDClass_real = BCELoss(output_1, label_1)
-            else:
-                lossDClass_real = output_1.mean()
-            lossDClass_real.backward(mone)
+        output_dist_1 = netDDist(trainrealimages, reftrainimages)
+        if opt.kldiv:
+            lossDDist_real = BCELoss(output_dist_1, label_1)
+        else:
+            lossDDist_real = output_dist_1.mean()
+        lossDDist_real.backward(mone, retain_graph=True)
+        # Maximize distance between input sample and generated sample
+        output_dist_0 = netDDist(trainrealimages, traingenimages)
+        if opt.kldiv:
+            lossDDist_gen = BCELoss(output_dist_0, label_1)
+        else:
+            lossDDist_gen = output_dist_0.mean()
+        lossDDist_gen.backward(one)
 
-            # train with generated
-            traingenimages = netG(trainrealimages, noise)
-            output_0 = netDClass(traingenimages, onehottrainreallabels)
-            if opt.kldiv:
-                lossDClass_gen = BCELoss(output_0, label_1)
-            else:
-                lossDClass_gen = output_0.mean()
-            lossDClass_gen.backward(one, retain_graph=True)
+        # Loss
+        total_lossDDist_real += - lossDDist_real.item()
+        total_lossDDist_gen += lossDDist_gen.item()
+        lossDDist = total_lossDDist_real + total_lossDDist_gen
+        optimizerDDist.step()
 
-            # train with unlabeled
-            # complete with unlabeled label
-
-            #lossD_unlabeled = netDClass(traingenimages, trainreallabels)
-            #lossD_unlabeled.backward(mone)
-
-            total_lossDClass_real += - lossDClass_real.item()
-            total_lossDClass_gen += lossDClass_gen.item()
-            lossDClass += total_lossDClass_real + total_lossDClass_gen #- lossD_unlabeled
-            optimizerDClass.step()
-
-            #############################
-            # (1.2) Update DDist network
-            #############################
-            netDDist.zero_grad()
-
-            # Minimize distance between input sample and a sample from same class
-            reftrainimages = trainrealimages.clone()
-            for i in range(reftrainimages.size(0)):
-                found = False
-                while not found:
-                    index = random.randint(0, len(trainset)-1)
-                    selected_image, selected_label = trainset.__getitem__(index)
-                    selected_image = selected_image.to(device)
-                    selected_image.requires_grad_()
-                    if selected_label != trainreallabels.data[i]:
-                        found = True
-                        reftrainimages[i] = selected_image
-
-            output_dist_1 = netDDist(trainrealimages, reftrainimages)
-            if opt.kldiv:
-                lossDDist_real = BCELoss(output_dist_1, label_1)
-            else:
-                lossDDist_real = output_dist_1.mean()
-            lossDDist_real.backward(mone, retain_graph=True)
-            # Maximize distance between input sample and generated sample
-            output_dist_0 = netDDist(trainrealimages, traingenimages)
-            if opt.kldiv:
-                lossDDist_gen = BCELoss(output_dist_0, label_1)
-            else:
-                lossDDist_gen = output_dist_0.mean()
-            lossDDist_gen.backward(one)
-
-            # Loss
-            total_lossDDist_real += - lossDDist_real.item()
-            total_lossDDist_gen += lossDDist_gen.item()
-            lossDDist += total_lossDDist_real + total_lossDDist_gen
-            optimizerDDist.step()
-
-            lossD += lossDClass + lossDDist
+        lossD = lossDClass + lossDDist
 
         ############################
         # (2) Update G network
@@ -340,7 +328,7 @@ for epoch in range(opt.niter):
         total_lossG_Class += - lossG_Class.item()
         total_lossG_Dist += - lossG_Dist.item()
         total_lossG_CE += lossG_CE.item()
-        lossG += total_lossG_Class + total_lossG_Dist + total_lossG_CE
+        lossG = total_lossG_Class + total_lossG_Dist + total_lossG_CE
 
         optimizerG.step()
 
@@ -390,7 +378,7 @@ for epoch in range(opt.niter):
         # Loss
         total_lossC_CE_real += lossC_CE_real.item()
         total_lossC_CE_gen += lossC_CE_gen.item()
-        lossC += total_lossC_CE_real + total_lossC_CE_gen #+ lossC_CE_unlabeled
+        lossC = total_lossC_CE_real + total_lossC_CE_gen #+ lossC_CE_unlabeled
 
         optimizerC.step()
 
@@ -441,11 +429,11 @@ for epoch in range(opt.niter):
     if (epoch % 100 == 0) and (epoch > 0):
         # save some examples
         traingenimages = traingenimages.mul(0.5).add(0.5)
-        vutils.save_image(traingenimages.data, '{0}/{1}_generated_samples.png'.format(opt.outDir, gen_iterations))
+        vutils.save_image(traingenimages.data, '{0}/{1}_generated_samples.png'.format(opt.outDir, epoch))
         reftrainimages = reftrainimages.mul(0.5).add(0.5)
-        vutils.save_image(reftrainimages.data, '{0}/{1}_ref_samples.png'.format(opt.outDir, gen_iterations))
+        vutils.save_image(reftrainimages.data, '{0}/{1}_ref_samples.png'.format(opt.outDir, epoch))
         realimages = trainrealimages.mul(0.5).add(0.5)
-        vutils.save_image(realimages.data, '{0}/{1}_real_samples.png'.format(opt.outDir, gen_iterations))
+        vutils.save_image(realimages.data, '{0}/{1}_real_samples.png'.format(opt.outDir, epoch))
 
 #    if (epoch % 500 == 0) and (epoch > 0):  # save model every 500 epochs
 #        # save final models
