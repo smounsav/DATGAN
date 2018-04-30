@@ -10,6 +10,7 @@ import torch.utils.data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
+from torch.utils.data.sampler import SubsetRandomSampler
 import datetime
 
 import models.discriminator as discriminator_model
@@ -19,12 +20,14 @@ import models.generator as generator_model
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', required=True, help='cifar10 | svhn | folder')
 parser.add_argument('--dataroot', required=True, help='path to dataset')
-parser.add_argument('--workers', type=int, help='number of data loading workers', default=2)
-parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
+parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
+parser.add_argument('--trainsetsize', type=int, help='size of training dataset to use, -1 = full dataset', default=-1)
+parser.add_argument('--valratio', type=float, default=0, help='ratio of the labeled train dataset to be used as validation set')
+parser.add_argument('--unlbldratio', type=float, default=0.80, help='ratio of the whole training dataset to be used as unlabeled training set')
 parser.add_argument('--imageSize', type=int, default=32, help='the height / width of the input image to network')
-parser.add_argument('--nc', type=int, default=3, help='input image channels')
+parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
+parser.add_argument('--nc', type=int, default=3, help='number of channels of input image')
 parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
-parser.add_argument('--ngf', type=int, default=64, help='final number of filters generator')
 parser.add_argument('--ndf', type=int, default=64, help='initial number of filters discriminator')
 parser.add_argument('--ncf', type=int, default=64, help='initial number of filters classifier')
 parser.add_argument('--niter', type=int, default=25, help='number of epochs to train for')
@@ -39,12 +42,14 @@ parser.add_argument('--netDDist', default='', help="path to netDDist (to continu
 parser.add_argument('--netC', default='', help="path to netC (to continue training)")
 parser.add_argument('--clamp_lower', type=float, default=-0.05)
 parser.add_argument('--clamp_upper', type=float, default=0.05)
-parser.add_argument('--Diters', type=int, default=5, help='number of D iters per each G iter')
 parser.add_argument('--outDir', default=None, help='Where to store samples and models')
 parser.add_argument('--adam', action='store_true', help='Whether to use adam (default is rmsprop)')
 parser.add_argument('--kldiv', action='store_true', help='Whether to use KL Divergence (default is WGAN)')
 opt = parser.parse_args()
 print(opt)
+
+assert 0 <= opt.valratio <= 1, 'Error: invalid validation data ratio. valratio should be 0 <= valratio <= 1'
+assert 0 <= opt.unlbldratio <= 1, 'Error: invalid unlabeled data ratio. unlbldratio should be 0 <= unlbldratio <= 1'
 
 if opt.outDir is None:
     now = datetime.datetime.now().timetuple()
@@ -73,30 +78,61 @@ if opt.dataset in ['folder']:
     # folder dataset
     trainset = dset.ImageFolder(root=opt.dataroot + '/train', transform=transform)
     testset = dset.ImageFolder(root=opt.dataroot + '/test', transform=transform)
+    nclasses = len(trainset.classes)
 elif opt.dataset == 'cifar10':
     trainset = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transform)
     testset = dset.CIFAR10(root=opt.dataroot, train=False, download=True, transform=transform)
+    nclasses = 10
 elif opt.dataset == 'svhn':
     trainset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transform)
     testset = dset.SVHN(root=opt.dataroot, split='test', download=True, transform=transform)
+    nclasses = 10
 
+# Separate training data into fully labeled training, fully labeled validation and unlabeled dataset
+len_train = len(trainset)
+indices_train = list(range(len_train))
+random.shuffle(indices_train)
+if opt.trainsetsize != -1:
+    assert 0 < opt.trainsetsize <= len_train, 'Error: invalid required training dataset size. Not enough training samples.'
+    indices_train = indices_train[:opt.trainsetsize]
+len_train_reduced = len(indices_train)
+split_lbl_unlbl = int(opt.unlbldratio * len_train_reduced)
+split_train_val = int(opt.valratio * (len_train_reduced - split_lbl_unlbl))
+unlbl_idx = indices_train[:split_lbl_unlbl]
+train_idx, val_idx = indices_train[split_lbl_unlbl + split_train_val:], indices_train[split_lbl_unlbl:split_lbl_unlbl + split_train_val]
+print(len(train_idx))
+print(len(val_idx))
+print(len(unlbl_idx))
+
+
+train_sampler = SubsetRandomSampler(train_idx)
+val_sampler = SubsetRandomSampler(val_idx)
+unlbl_sampler = SubsetRandomSampler(unlbl_idx)
+
+# define data loaders
 assert trainset
-trainloader = torch.utils.data.DataLoader(trainset, batch_size=opt.batchSize,
-                                          shuffle=True, num_workers=opt.workers)
+trainloader = torch.utils.data.DataLoader(trainset, batch_size=opt.batchSize, sampler=train_sampler,
+                                          shuffle=False, num_workers=opt.workers)
 print(len(trainloader))
-# nclasses = len(trainset.classes)
-nclasses = 10
+valloader = torch.utils.data.DataLoader(trainset, batch_size=opt.batchSize, sampler=val_sampler,
+                                          shuffle=False, num_workers=opt.workers)
+
+batchSizeUnlbl = int(opt.batchSize * (len(unlbl_idx) / len(train_idx)))
+if batchSizeUnlbl == 0:
+    batchSizeUnlbl = opt.batchSize
+unlblloader = torch.utils.data.DataLoader(trainset, batch_size=batchSizeUnlbl, sampler=unlbl_sampler,
+                                          shuffle=False, num_workers=opt.workers)
+print(len(unlblloader))
 
 assert testset
 testloader = torch.utils.data.DataLoader(testset, batch_size=opt.batchSize,
                                          shuffle=False, num_workers=opt.workers)
-print(len(testloader))
 
 nz = int(opt.nz)
-ngf = int(opt.ngf)
+nc = int(opt.nc)
 ndf = int(opt.ndf)
 ncf = int(opt.ncf)
-nc = int(opt.nc)
+
 
 # custom weights initialization called on netG and netDClass
 def weights_init(m):
@@ -160,14 +196,12 @@ if opt.kldiv:
 
 gen_iterations = 0
 for epoch in range(opt.niter):
-    data_iter = iter(trainloader)
-    i = 0
-
     # Initialize losses
     lossD = 0.0
     lossDClass = 0.0
     total_lossDClass_real = 0.0
     total_lossDClass_gen = 0.0
+    totallossDClass_unlbl = 0.0
     lossDDist = 0.0
     total_lossDDist_real = 0.0
     total_lossDDist_gen = 0.0
@@ -178,9 +212,10 @@ for epoch in range(opt.niter):
     lossC = 0.0
     total_lossC_CE_real = 0.0
     total_lossC_CE_gen = 0.0
-
-    #while i < len(trainloader):
-    for i, data in enumerate(trainloader):
+    totallossCClass_unlbl = 0.0
+    nbcorrectlabel = 0.0
+    totalnblabels = 0.0
+    for i, (lbldata, unlbldata) in enumerate(zip(trainloader, unlblloader)):
 
         ############################
         # (1) Update D network
@@ -189,9 +224,9 @@ for epoch in range(opt.niter):
             p.requires_grad = True
         for p in netDDist.parameters():
             p.requires_grad = True
-        for p in netG.parameters(): # to avoid computation
+        for p in netG.parameters():  # to avoid computation
             p.requires_grad = False
-        for p in netC.parameters(): # to avoid computation
+        for p in netC.parameters():  # to avoid computation
             p.requires_grad = False
 
         # clamp parameters to a cube if using Wasserstein distance optimisation
@@ -199,20 +234,24 @@ for epoch in range(opt.niter):
             for p in netDClass.parameters():
                 p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
 
-        # Sample batch of real training images
-        trainrealimages, trainreallabels = data
-        batch_size = trainrealimages.size(0)
+        # Sample batch of real labeled training images
+        trainrealimages, trainreallabels = lbldata
+        batch_size_lbl = trainrealimages.size(0)
         trainrealimages =  trainrealimages.requires_grad_().to(device)
-        trainreallabels = trainreallabels.requires_grad_().to(device)
-        noise = torch.FloatTensor(batch_size, nz, 1, 1).normal_(0, 1).requires_grad_().to(device)
-
+        trainreallabels = trainreallabels.to(device)
+        # Generate noise to generate images
+        noise = torch.FloatTensor(batch_size_lbl, nz, 1, 1).normal_(0, 1).requires_grad_().to(device)
         if opt.kldiv:
-            label_1 = torch.FloatTensor(batch_size).fill_(1).to(device)
-            #label_1.requires_grad_()
+            label_1 = torch.FloatTensor(batch_size_lbl).fill_(1).to(device)
         # converting labels to one hot encoding form
-        onehotlabelssupport = torch.FloatTensor(batch_size, nclasses).zero_().to(device)
-
+        onehotlabelssupport = torch.FloatTensor(batch_size_lbl, nclasses).zero_().to(device)
         onehottrainreallabels = onehotlabelssupport.scatter_(1,trainreallabels.unsqueeze(1), 1)
+
+        # Sample batch of real unlabeled training images
+        trainrealunlblimages, _ = unlbldata
+        trainrealunlblimages = trainrealunlblimages.requires_grad_().to(device)
+        if opt.kldiv:
+            label_1u = torch.FloatTensor(trainrealunlblimages.size(0)).fill_(1).to(device)
 
         ##############################
         # (1.1) Update DClass network
@@ -226,6 +265,7 @@ for epoch in range(opt.niter):
         else:
             lossDClass_real = output_1.mean()
         lossDClass_real.backward(mone)
+        total_lossDClass_real += - lossDClass_real.item()
 
         # train with generated
         traingenimages = netG(trainrealimages, noise)
@@ -235,16 +275,23 @@ for epoch in range(opt.niter):
         else:
             lossDClass_gen = output_0.mean()
         lossDClass_gen.backward(one, retain_graph=True)
+        total_lossDClass_gen += lossDClass_gen.item()
 
         # train with unlabeled
-        # complete with unlabeled label
+        predlabelsunlbl = netC(trainrealunlblimages)
+        predclassunlbltrain = predlabelsunlbl.data.max(1, keepdim=True)[1]
+        onehotlabelssupport = torch.FloatTensor(trainrealunlblimages.size(0), nclasses).zero_().to(device)
+        onehottrainrealunlbllabels = onehotlabelssupport.scatter_(1,predclassunlbltrain, 1)
 
-        #lossD_unlabeled = netDClass(traingenimages, trainreallabels)
-        #lossD_unlabeled.backward(mone)
+        output_u = netDClass(trainrealunlblimages, onehottrainrealunlbllabels)
+        if opt.kldiv:
+            lossDClass_unlbl = BCELoss(output_u, label_1u)
+        else:
+            lossDClass_unlbl = output_u.mean()
+        lossDClass_unlbl.backward(one, retain_graph=True)
+        totallossDClass_unlbl += lossDClass_unlbl.item()
 
-        total_lossDClass_real += - lossDClass_real.item()
-        total_lossDClass_gen += lossDClass_gen.item()
-        lossDClass = total_lossDClass_real + total_lossDClass_gen #- lossD_unlabeled
+        lossDClass = total_lossDClass_real + total_lossDClass_gen + totallossDClass_unlbl
         optimizerDClass.step()
 
         #############################
@@ -254,16 +301,16 @@ for epoch in range(opt.niter):
 
         # Minimize distance between input sample and a sample from same class
         reftrainimages = trainrealimages.clone()
-        for i in range(reftrainimages.size(0)):
+        for idx in range(reftrainimages.size(0)):
             found = False
             while not found:
                 index = random.randint(0, len(trainset)-1)
                 selected_image, selected_label = trainset.__getitem__(index)
                 selected_image = selected_image.to(device)
                 selected_image.requires_grad_()
-                if selected_label != trainreallabels.data[i]:
+                if selected_label == trainreallabels.data[idx]:
                     found = True
-                    reftrainimages[i] = selected_image
+                    reftrainimages[idx] = selected_image
 
         output_dist_1 = netDDist(trainrealimages, reftrainimages)
         if opt.kldiv:
@@ -271,6 +318,7 @@ for epoch in range(opt.niter):
         else:
             lossDDist_real = output_dist_1.mean()
         lossDDist_real.backward(mone, retain_graph=True)
+        total_lossDDist_real += - lossDDist_real.item()
         # Maximize distance between input sample and generated sample
         output_dist_0 = netDDist(trainrealimages, traingenimages)
         if opt.kldiv:
@@ -278,10 +326,8 @@ for epoch in range(opt.niter):
         else:
             lossDDist_gen = output_dist_0.mean()
         lossDDist_gen.backward(one)
-
-        # Loss
-        total_lossDDist_real += - lossDDist_real.item()
         total_lossDDist_gen += lossDDist_gen.item()
+        # Loss
         lossDDist = total_lossDDist_real + total_lossDDist_gen
         optimizerDDist.step()
 
@@ -296,8 +342,8 @@ for epoch in range(opt.niter):
             p.requires_grad = False # to avoid computation
         for p in netG.parameters():
             p.requires_grad = True
-        for p in netC.parameters():
-            p.requires_grad = False # to avoid computation
+#        for p in netC.parameters():
+#            p.requires_grad = False # to avoid computation
 
         netG.zero_grad()
         traingenimages = netG(trainrealimages, noise)
@@ -308,6 +354,7 @@ for epoch in range(opt.niter):
         else:
            lossG_Class = output_0.mean()
         lossG_Class.backward(mone, retain_graph=True)
+        total_lossG_Class += - lossG_Class.item()
         # Distance loss
         output_1 = netDDist(trainrealimages, traingenimages)
         if opt.kldiv:
@@ -315,30 +362,29 @@ for epoch in range(opt.niter):
         else:
             lossG_Dist= output_1.mean()
         lossG_Dist.backward(mone, retain_graph=True)
+        total_lossG_Dist += - lossG_Dist.item()
+
         # Label cross entropy  loss term
         logitsgenlabels = netC(traingenimages)
         maskedlogitsgenlabels = nn.functional.softmax(logitsgenlabels, dim=1).mul(onehottrainreallabels).sum(dim=1)
-        if opt.kldiv:
-            lossG_CE = BCELoss(maskedlogitsgenlabels, label_1)
-        else:
-            lossG_CE = maskedlogitsgenlabels.mean()
+        #if opt.kldiv:
+        #    lossG_CE = nn.BCELoss(maskedlogitsgenlabels, label_1)
+        #else:
+        lossG_CE = maskedlogitsgenlabels.mean()
         lossG_CE.backward(one)
+        total_lossG_CE += lossG_CE.item()
 
         # Loss
-        total_lossG_Class += - lossG_Class.item()
-        total_lossG_Dist += - lossG_Dist.item()
-        total_lossG_CE += lossG_CE.item()
         lossG = total_lossG_Class + total_lossG_Dist + total_lossG_CE
-
         optimizerG.step()
 
         ############################
         # (3) Update C network
         ###########################
-        for p in netDDist.parameters():
-            p.requires_grad = False # to avoid computation
-        for p in netDClass.parameters():
-            p.requires_grad = False # to avoid computation
+#        for p in netDDist.parameters():
+#            p.requires_grad = False # to avoid computation
+#        for p in netDClass.parameters():
+#            p.requires_grad = False # to avoid computation
         for p in netG.parameters():
             p.requires_grad = False # to avoid computation
         for p in netC.parameters():
@@ -349,8 +395,32 @@ for epoch in range(opt.niter):
 
         # train with real
         predtrainreallabels = netC(trainrealimages)
-        nbcorrectlabel = 0.0
-        totalnblabels = 0.0
+        lossC_CE_real = CELoss(predtrainreallabels, trainreallabels)
+        lossC_CE_real.backward(one)
+        total_lossC_CE_real += lossC_CE_real.item()
+
+        # train with fake
+        traingenimages = netG(trainrealimages, noise)
+        predtraingenlabels = netC(traingenimages)
+        lossC_CE_gen = CELoss(predtraingenlabels, trainreallabels)
+        lossC_CE_gen.backward(one)
+        total_lossC_CE_gen += lossC_CE_gen.item()
+
+        # train with unlabeled
+        predtrainrealunlbllabels = netC(trainrealunlblimages)
+        predlabelsunlbl_softmaxed = nn.functional.softmax(predtrainrealunlbllabels, dim=1)
+        predscoreunlbltrain = predlabelsunlbl_softmaxed.data.max(1, keepdim=True)[0]
+        predclassunlbltrain = predlabelsunlbl_softmaxed.data.max(1, keepdim=True)[1]
+        onehottrainrealunlbllabels = onehotlabelssupport.scatter_(1, predclassunlbltrain, 1)
+        output_u = (netDClass(trainrealunlblimages, onehottrainrealunlbllabels)).unsqueeze( -1)
+        lossCClass_unlbl = predscoreunlbltrain.mul(torch.nn.functional.logsigmoid(output_u)).mean()
+        lossCClass_unlbl.backward(mone)
+        totallossCClass_unlbl += - lossCClass_unlbl.item()
+
+        # Loss
+        lossC = total_lossC_CE_real + total_lossC_CE_gen + totallossCClass_unlbl
+        optimizerC.step()
+
         if epoch % 10 == 0 and epoch > 0:  # print and save loss every 10 epochs
             with torch.no_grad():
                 # get the index of the max log-probability to get the label
@@ -359,47 +429,23 @@ for epoch in range(opt.niter):
                 nbcorrectlabel += predclassrealtrain.eq(trainreallabels.data.view_as(predclassrealtrain)).sum()
                 totalnblabels += trainreallabels.size(0)
                 trainacc = 100 * nbcorrectlabel.item() / totalnblabels
-        lossC_CE_real = CELoss(predtrainreallabels, trainreallabels)
-        lossC_CE_real.backward(one)
-
-        # train with fake
-        traingenimages = netG(trainrealimages, noise)
-        predtraingenlabels = netC(traingenimages)
-        # Compute train loss
-        lossC_CE_gen = CELoss(predtraingenlabels, trainreallabels)
-        lossC_CE_gen.backward(one)
-
-        #train with unlabeled
-        # trainunldata??
-        #predunllabels = netC(trainunldata)
-        #lossC_unlabeled = netDClass(trainunldata, predunllabels)
-        #lossC_CE_unlabeled.backward(one)
-
-        # Loss
-        total_lossC_CE_real += lossC_CE_real.item()
-        total_lossC_CE_gen += lossC_CE_gen.item()
-        lossC = total_lossC_CE_real + total_lossC_CE_gen #+ lossC_CE_unlabeled
-
-        optimizerC.step()
 
         gen_iterations += 1
 
 
     if epoch % 10 == 0 and epoch > 0: # print and save loss every 10 epochs
 
-        # Test C
+        # Test C on validation set
         netC.eval()
-        nbcorrectval = 0.0
-        totalval = 0.0
         with torch.no_grad():
-            for valdata in testloader:
+            nbcorrectval = 0.0
+            totalval = 0.0
+            valacc = 0.0
+            for valdata in valloader:
                 # Get test images
                 valimages, vallabels = valdata
                 # activate cuda version of the variables if cuda is activated
-#                if opt.cuda:
                 valimages, vallabels = valimages.to(device), vallabels.to(device)
-                # wrap them in Variable
-#                valimages, vallabels = Variable(valimages, volatile=True), Variable(vallabels, volatile=True)
                 # Calculate scores
                 valoutput = netC(valimages)
                 # get the index of the max log-probability to get the label
@@ -411,20 +457,38 @@ for epoch in range(opt.niter):
                 # Compute val loss
                 #valloss = CELoss(valoutput, vallabels)
 
+            nbcorrecttest = 0.0
+            totaltest = 0.0
+            testacc = 0.0
+            for testdata in testloader:
+                # Get test images
+                testimages, testlabels = testdata
+                # activate cuda version of the variables if cuda is activated
+                testimages, testlabels = testimages.to(device), testlabels.to(device)
+                # Calculate scores
+                testoutput = netC(testimages)
+                # get the index of the max log-probability to get the label
+                testpred = testoutput.data.max(1, keepdim=True)[1]
+                # count the number of samples correctly classified
+                nbcorrecttest += testpred.eq(testlabels.view_as(testpred)).sum()
+                totaltest += testlabels.size(0)
+                testacc = 100 * nbcorrecttest.item() / totaltest
+
+
         #if epoch > 100:
             # Print loss on screen for monitoring
-        loss = '[{0}/{1}][{2}/{3}][{4}] lossD: {5} lossDClass: {6} lossDDist {7} lossG: {8} lossG_Class: {9} lossG_Dist: {10} lossG_CE: {11} lossC: {12} lossC_CE_real: {13} lossC_CE_gen {14} trainacc {15} valacc {16}'.format(
-            epoch, opt.niter, i, len(trainloader), gen_iterations,
-            lossD, lossDClass, lossDDist,
-            lossG, total_lossG_Class, total_lossG_Dist,total_lossG_CE,
-            lossC, total_lossC_CE_real, total_lossC_CE_gen,
-            trainacc, valacc)
+        loss = '[{0}/{1}] lossDClass: {2} lossDDist {3} lossG: {4} lossC: {5} trainacc {6} valacc {7} testacc {8}'.format(
+            epoch, opt.niter,
+            lossDClass, lossDDist,
+            lossG,
+            lossC,
+            trainacc, valacc, testacc)
         print(loss)
 
         # save loss in a log file
         f = open(opt.outDir + '/' + opt.outDir + '.txt', 'a')
         f.write(loss + '\n')
-        f.close
+        f.close()
 
     if (epoch % 100 == 0) and (epoch > 0):
         # save some examples
