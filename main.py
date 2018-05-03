@@ -156,7 +156,7 @@ netDDist.apply(weights_init)
 netG = generator_model.UNet(nc,nc,nz).to(device)
 netG.apply(weights_init)
 # Classifier
-netC = classifier_model.cnnClass(nc, ncf).to(device)
+netC = classifier_model.badGanClass(nc, ncf).to(device)
 netC.apply(weights_init)
 
 # Load model checkpoint if needed
@@ -215,7 +215,16 @@ for epoch in range(opt.niter):
     totallossCClass_unlbl = 0.0
     nbcorrectlabel = 0.0
     totalnblabels = 0.0
-    for i, (lbldata, unlbldata) in enumerate(zip(trainloader, unlblloader)):
+
+    if opt.unlbldratio > 0:
+        data = zip(trainloader, unlblloader)
+    else:
+        data = trainloader
+    for i, item in enumerate(data):
+        if len(unlblloader) > 0:
+            lbldata, unlbldata = item
+        else:
+            lbldata = item
 
         ############################
         # (1) Update D network
@@ -248,10 +257,11 @@ for epoch in range(opt.niter):
         onehottrainreallabels = onehotlabelssupport.scatter_(1,trainreallabels.unsqueeze(1), 1)
 
         # Sample batch of real unlabeled training images
-        trainrealunlblimages, _ = unlbldata
-        trainrealunlblimages = trainrealunlblimages.requires_grad_().to(device)
-        if opt.kldiv:
-            label_1u = torch.FloatTensor(trainrealunlblimages.size(0)).fill_(1).to(device)
+        if opt.unlbldratio > 0:
+            trainrealunlblimages, _ = unlbldata
+            trainrealunlblimages = trainrealunlblimages.requires_grad_().to(device)
+            if opt.kldiv:
+                label_1u = torch.FloatTensor(trainrealunlblimages.size(0)).fill_(1).to(device)
 
         ##############################
         # (1.1) Update DClass network
@@ -278,18 +288,19 @@ for epoch in range(opt.niter):
         total_lossDClass_gen += lossDClass_gen.item()
 
         # train with unlabeled
-        predlabelsunlbl = netC(trainrealunlblimages)
-        predclassunlbltrain = predlabelsunlbl.data.max(1, keepdim=True)[1]
-        onehotlabelssupport = torch.FloatTensor(trainrealunlblimages.size(0), nclasses).zero_().to(device)
-        onehottrainrealunlbllabels = onehotlabelssupport.scatter_(1,predclassunlbltrain, 1)
+        if opt.unlbldratio > 0:
+            predlabelsunlbl = netC(trainrealunlblimages)
+            predclassunlbltrain = predlabelsunlbl.data.max(1, keepdim=True)[1]
+            onehotlabelssupport = torch.FloatTensor(trainrealunlblimages.size(0), nclasses).zero_().to(device)
+            onehottrainrealunlbllabels = onehotlabelssupport.scatter_(1,predclassunlbltrain, 1)
 
-        output_u = netDClass(trainrealunlblimages, onehottrainrealunlbllabels)
-        if opt.kldiv:
-            lossDClass_unlbl = BCELoss(output_u, label_1u)
-        else:
-            lossDClass_unlbl = output_u.mean()
-        lossDClass_unlbl.backward(one, retain_graph=True)
-        totallossDClass_unlbl += lossDClass_unlbl.item()
+            output_u = netDClass(trainrealunlblimages, onehottrainrealunlbllabels)
+            if opt.kldiv:
+                lossDClass_unlbl = BCELoss(output_u, label_1u)
+            else:
+                lossDClass_unlbl = output_u.mean()
+            lossDClass_unlbl.backward(one, retain_graph=True)
+            totallossDClass_unlbl += lossDClass_unlbl.item()
 
         lossDClass = total_lossDClass_real + total_lossDClass_gen + totallossDClass_unlbl
         optimizerDClass.step()
@@ -407,15 +418,16 @@ for epoch in range(opt.niter):
         total_lossC_CE_gen += lossC_CE_gen.item()
 
         # train with unlabeled
-        predtrainrealunlbllabels = netC(trainrealunlblimages)
-        predlabelsunlbl_softmaxed = nn.functional.softmax(predtrainrealunlbllabels, dim=1)
-        predscoreunlbltrain = predlabelsunlbl_softmaxed.data.max(1, keepdim=True)[0]
-        predclassunlbltrain = predlabelsunlbl_softmaxed.data.max(1, keepdim=True)[1]
-        onehottrainrealunlbllabels = onehotlabelssupport.scatter_(1, predclassunlbltrain, 1)
-        output_u = (netDClass(trainrealunlblimages, onehottrainrealunlbllabels)).unsqueeze( -1)
-        lossCClass_unlbl = predscoreunlbltrain.mul(torch.nn.functional.logsigmoid(output_u)).mean()
-        lossCClass_unlbl.backward(mone)
-        totallossCClass_unlbl += - lossCClass_unlbl.item()
+        if opt.unlbldratio > 0:
+            predtrainrealunlbllabels = netC(trainrealunlblimages)
+            predlabelsunlbl_softmaxed = nn.functional.softmax(predtrainrealunlbllabels, dim=1)
+            predscoreunlbltrain = predlabelsunlbl_softmaxed.data.max(1, keepdim=True)[0]
+            predclassunlbltrain = predlabelsunlbl_softmaxed.data.max(1, keepdim=True)[1]
+            onehottrainrealunlbllabels = onehotlabelssupport.scatter_(1, predclassunlbltrain, 1)
+            output_u = (netDClass(trainrealunlblimages, onehottrainrealunlbllabels)).unsqueeze( -1)
+            lossCClass_unlbl = predscoreunlbltrain.mul(torch.nn.functional.logsigmoid(output_u)).mean()
+            lossCClass_unlbl.backward(mone)
+            totallossCClass_unlbl += - lossCClass_unlbl.item()
 
         # Loss
         lossC = total_lossC_CE_real + total_lossC_CE_gen + totallossCClass_unlbl
