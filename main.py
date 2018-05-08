@@ -29,22 +29,20 @@ parser.add_argument('--batchSize', type=int, default=64, help='input batch size'
 parser.add_argument('--nc', type=int, default=3, help='number of channels of input image')
 parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector')
 parser.add_argument('--ndf', type=int, default=64, help='initial number of filters discriminator')
+parser.add_argument('--ngf', type=int, default=64, help='initial number of filters generator')
 parser.add_argument('--ncf', type=int, default=64, help='initial number of filters classifier')
 parser.add_argument('--niter', type=int, default=25, help='number of epochs to train for')
-parser.add_argument('--lrD', type=float, default=0.00005, help='learning rate for Critic, default=0.00005')
-parser.add_argument('--lrG', type=float, default=0.00005, help='learning rate for Generator, default=0.00005')
-parser.add_argument('--lrC', type=float, default=0.00005, help='learning rate for Classifier, default=0.00005')
+parser.add_argument('--lrD', type=float, default=0.0005, help='learning rate for Critic, default=0.0005')
+parser.add_argument('--lrG', type=float, default=0.0005, help='learning rate for Generator, default=0.0005')
+parser.add_argument('--lrC', type=float, default=0.0005, help='learning rate for Classifier, default=0.0005')
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--cuda'  , action='store_true', help='enables cuda')
 parser.add_argument('--netG', default='', help="path to netG (to continue training)")
 parser.add_argument('--netDClass', default='', help="path to netDClass (to continue training)")
 parser.add_argument('--netDDist', default='', help="path to netDDist (to continue training)")
 parser.add_argument('--netC', default='', help="path to netC (to continue training)")
-parser.add_argument('--clamp_lower', type=float, default=-0.05)
-parser.add_argument('--clamp_upper', type=float, default=0.05)
 parser.add_argument('--outDir', default=None, help='Where to store samples and models')
-parser.add_argument('--adam', action='store_true', help='Whether to use adam (default is rmsprop)')
-parser.add_argument('--kldiv', action='store_true', help='Whether to use KL Divergence (default is WGAN)')
+parser.add_argument('--rmsprop', action='store_true', help='Whether to use rmsprop (default is adam)')
 opt = parser.parse_args()
 print(opt)
 
@@ -66,13 +64,17 @@ cudnn.benchmark = True
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 # activate cuda acceleration if available
-device = torch.device("cuda" if opt.cuda else "cpu")
+if opt.cuda:
+    device = torch.device("cuda")
+    pinned_memory = True
+else:
+    device = torch.device("cpu")
+    pinned_memory = False
 
 # define preprocessing transformations
 transform=transforms.Compose([
    transforms.ToTensor(),
    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
 
 if opt.dataset in ['folder']:
     # folder dataset
@@ -90,6 +92,7 @@ elif opt.dataset == 'svhn':
 
 # Separate training data into fully labeled training, fully labeled validation and unlabeled dataset
 len_train = len(trainset)
+class_dict={i:trainset.train_labels[i] for i in range(len(trainset.train_labels))} # to speed up get item in Ddist
 indices_train = list(range(len_train))
 random.shuffle(indices_train)
 if opt.trainsetsize != -1:
@@ -104,7 +107,6 @@ print(len(train_idx))
 print(len(val_idx))
 print(len(unlbl_idx))
 
-
 train_sampler = SubsetRandomSampler(train_idx)
 val_sampler = SubsetRandomSampler(val_idx)
 unlbl_sampler = SubsetRandomSampler(unlbl_idx)
@@ -112,16 +114,16 @@ unlbl_sampler = SubsetRandomSampler(unlbl_idx)
 # define data loaders
 assert trainset
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=opt.batchSize, sampler=train_sampler,
-                                          shuffle=False, num_workers=opt.workers)
+                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory)
 print(len(trainloader))
 valloader = torch.utils.data.DataLoader(trainset, batch_size=opt.batchSize, sampler=val_sampler,
-                                          shuffle=False, num_workers=opt.workers)
+                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory)
 
 batchSizeUnlbl = int(opt.batchSize * (len(unlbl_idx) / len(train_idx)))
 if batchSizeUnlbl == 0:
     batchSizeUnlbl = opt.batchSize
 unlblloader = torch.utils.data.DataLoader(trainset, batch_size=batchSizeUnlbl, sampler=unlbl_sampler,
-                                          shuffle=False, num_workers=opt.workers)
+                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory)
 print(len(unlblloader))
 
 assert testset
@@ -131,7 +133,9 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=opt.batchSize,
 nz = int(opt.nz)
 nc = int(opt.nc)
 ndf = int(opt.ndf)
+ngf = int(opt.ngf)
 ncf = int(opt.ncf)
+
 
 
 # custom weights initialization called on netG and netDClass
@@ -153,7 +157,7 @@ netDClass.apply(weights_init)
 netDDist = discriminator_model.DDist(opt.imageSize, nc, ndf).to(device)
 netDDist.apply(weights_init)
 # Generator
-netG = generator_model.UNet(nc,nc,nz).to(device)
+netG = generator_model.SCTG(opt.imageSize, nc, ngf, nz).to(device)
 netG.apply(weights_init)
 # Classifier
 netC = classifier_model.badGanClass(nc, ncf).to(device)
@@ -178,43 +182,44 @@ one = torch.FloatTensor([1]).to(device)
 mone = one * -1
 
 # setup optimizer
-if opt.adam:
-    optimizerDClass = optim.Adam(netDClass.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.999))
-    optimizerDDist = optim.Adam(netDDist.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.999))
-    optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG, betas=(opt.beta1, 0.999))
-    optimizerC = optim.Adam(netC.parameters(), lr=opt.lrC, betas=(opt.beta1, 0.999))
-else:
+if opt.rmsprop:
     optimizerDClass = optim.RMSprop(netDClass.parameters(), lr=opt.lrD)
     optimizerDDist = optim.RMSprop(netDDist.parameters(), lr=opt.lrD)
     optimizerG = optim.RMSprop(netG.parameters(), lr=opt.lrG)
     optimizerC = optim.RMSprop(netC.parameters(), lr=opt.lrC)
+else:
+    optimizerDClass = optim.Adam(netDClass.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.999))
+    optimizerDDist = optim.Adam(netDDist.parameters(), lr=opt.lrD, betas=(opt.beta1, 0.999))
+    optimizerG = optim.Adam(netG.parameters(), lr=opt.lrG, betas=(opt.beta1, 0.999))
+    optimizerC = optim.Adam(netC.parameters(), lr=opt.lrC, betas=(opt.beta1, 0.999))
+
 
 # define classification loss
 CELoss = nn.CrossEntropyLoss().to(device)
-if opt.kldiv:
-    BCELoss = nn.BCEWithLogitsLoss().to(device)
+BCELoss = nn.BCEWithLogitsLoss().to(device)
 
 gen_iterations = 0
 for epoch in range(opt.niter):
     # Initialize losses
-    lossD = 0.0
-    lossDClass = 0.0
+    totalLossD = 0.0
     total_lossDClass_real = 0.0
     total_lossDClass_gen = 0.0
     totallossDClass_unlbl = 0.0
-    lossDDist = 0.0
     total_lossDDist_real = 0.0
     total_lossDDist_gen = 0.0
-    lossG = 0.0
+    totalLossG = 0.0
     total_lossG_Class = 0.0
     total_lossG_Dist = 0.0
     total_lossG_CE = 0.0
-    lossC = 0.0
+    totalLossC = 0.0
     total_lossC_CE_real = 0.0
     total_lossC_CE_gen = 0.0
     totallossCClass_unlbl = 0.0
     nbcorrectlabel = 0.0
     totalnblabels = 0.0
+    trainacc = 0.0
+    valacc = 0.0
+    testacc = 0.0
 
     if opt.unlbldratio > 0:
         data = zip(trainloader, unlblloader)
@@ -231,17 +236,12 @@ for epoch in range(opt.niter):
         ###########################
         for p in netDClass.parameters():
             p.requires_grad = True
-        for p in netDDist.parameters():
-            p.requires_grad = True
+        # for p in netDDist.parameters():
+        #     p.requires_grad = True
         for p in netG.parameters():  # to avoid computation
             p.requires_grad = False
         for p in netC.parameters():  # to avoid computation
             p.requires_grad = False
-
-        # clamp parameters to a cube if using Wasserstein distance optimisation
-        if not opt.kldiv:
-            for p in netDClass.parameters():
-                p.data.clamp_(opt.clamp_lower, opt.clamp_upper)
 
         # Sample batch of real labeled training images
         trainrealimages, trainreallabels = lbldata
@@ -250,8 +250,8 @@ for epoch in range(opt.niter):
         trainreallabels = trainreallabels.to(device)
         # Generate noise to generate images
         noise = torch.FloatTensor(batch_size_lbl, nz, 1, 1).normal_(0, 1).requires_grad_().to(device)
-        if opt.kldiv:
-            label_1 = torch.FloatTensor(batch_size_lbl).fill_(1).to(device)
+        label_1 = torch.FloatTensor(batch_size_lbl).fill_(1).to(device)
+        label_0 = torch.FloatTensor(batch_size_lbl).fill_(0).to(device)
         # converting labels to one hot encoding form
         onehotlabelssupport = torch.FloatTensor(batch_size_lbl, nclasses).zero_().to(device)
         onehottrainreallabels = onehotlabelssupport.scatter_(1,trainreallabels.unsqueeze(1), 1)
@@ -260,8 +260,8 @@ for epoch in range(opt.niter):
         if opt.unlbldratio > 0:
             trainrealunlblimages, _ = unlbldata
             trainrealunlblimages = trainrealunlblimages.requires_grad_().to(device)
-            if opt.kldiv:
-                label_1u = torch.FloatTensor(trainrealunlblimages.size(0)).fill_(1).to(device)
+            label_1u = torch.FloatTensor(trainrealunlblimages.size(0)).fill_(1).to(device)
+            label_0u = torch.FloatTensor(trainrealunlblimages.size(0)).fill_(0).to(device)
 
         ##############################
         # (1.1) Update DClass network
@@ -270,39 +270,30 @@ for epoch in range(opt.niter):
 
         output_1 = netDClass(trainrealimages, onehottrainreallabels)
         # train with real
-        if opt.kldiv:
-            lossDClass_real = BCELoss(output_1, label_1)
-        else:
-            lossDClass_real = output_1.mean()
-        lossDClass_real.backward(mone)
-        total_lossDClass_real += - lossDClass_real.item()
+        lossDClass_real = BCELoss(output_1, label_1)
+        total_lossDClass_real += lossDClass_real.item()
 
         # train with generated
         traingenimages = netG(trainrealimages, noise)
         output_0 = netDClass(traingenimages, onehottrainreallabels)
-        if opt.kldiv:
-            lossDClass_gen = BCELoss(output_0, label_1)
-        else:
-            lossDClass_gen = output_0.mean()
-        lossDClass_gen.backward(one, retain_graph=True)
+        lossDClass_gen = BCELoss(output_0, label_0)
         total_lossDClass_gen += lossDClass_gen.item()
 
         # train with unlabeled
         if opt.unlbldratio > 0:
             predlabelsunlbl = netC(trainrealunlblimages)
-            predclassunlbltrain = predlabelsunlbl.data.max(1, keepdim=True)[1]
+            predclassunlbltrain = predlabelsunlbl.max(1, keepdim=True)[1]
             onehotlabelssupport = torch.FloatTensor(trainrealunlblimages.size(0), nclasses).zero_().to(device)
-            onehottrainrealunlbllabels = onehotlabelssupport.scatter_(1,predclassunlbltrain, 1)
+            onehottrainrealunlbllabels = onehotlabelssupport.scatter_(1, predclassunlbltrain, 1)
 
             output_u = netDClass(trainrealunlblimages, onehottrainrealunlbllabels)
-            if opt.kldiv:
-                lossDClass_unlbl = BCELoss(output_u, label_1u)
-            else:
-                lossDClass_unlbl = output_u.mean()
-            lossDClass_unlbl.backward(one, retain_graph=True)
+            lossDClass_unlbl = BCELoss(output_u, label_0u)
             totallossDClass_unlbl += lossDClass_unlbl.item()
-
-        lossDClass = total_lossDClass_real + total_lossDClass_gen + totallossDClass_unlbl
+            lossDClass = lossDClass_real + lossDClass_gen + lossDClass_unlbl
+        else:
+            lossDClass = lossDClass_real + lossDClass_gen
+        lossDClass.backward(retain_graph = True)
+        totalLossDClass = total_lossDClass_real + total_lossDClass_gen + totallossDClass_unlbl
         optimizerDClass.step()
 
         #############################
@@ -315,87 +306,65 @@ for epoch in range(opt.niter):
         for idx in range(reftrainimages.size(0)):
             found = False
             while not found:
-                index = random.randint(0, len(trainset)-1)
-                selected_image, selected_label = trainset.__getitem__(index)
-                selected_image = selected_image.to(device)
-                selected_image.requires_grad_()
-                if selected_label == trainreallabels.data[idx]:
+                index = random.randint(0, len(train_idx)-  1)
+                if class_dict[train_idx[index]] != trainreallabels[idx].item():
                     found = True
+                    selected_image, _ = trainset.__getitem__(train_idx[index])
                     reftrainimages[idx] = selected_image
 
-        output_dist_1 = netDDist(trainrealimages, reftrainimages)
-        if opt.kldiv:
-            lossDDist_real = BCELoss(output_dist_1, label_1)
-        else:
-            lossDDist_real = output_dist_1.mean()
-        lossDDist_real.backward(mone, retain_graph=True)
-        total_lossDDist_real += - lossDDist_real.item()
+        output_dist_0 = netDDist(trainrealimages, trainrealimages)
+        lossDDist_real = BCELoss(output_dist_0, label_0)
+        total_lossDDist_real += lossDDist_real.item()
         # Maximize distance between input sample and generated sample
-        output_dist_0 = netDDist(trainrealimages, traingenimages)
-        if opt.kldiv:
-            lossDDist_gen = BCELoss(output_dist_0, label_1)
-        else:
-            lossDDist_gen = output_dist_0.mean()
-        lossDDist_gen.backward(one)
+        output_dist_1 = netDDist(trainrealimages, reftrainimages)
+        lossDDist_gen = BCELoss(output_dist_1, label_1)
         total_lossDDist_gen += lossDDist_gen.item()
         # Loss
-        lossDDist = total_lossDDist_real + total_lossDDist_gen
+        lossDDist = lossDDist_real + lossDDist_gen
+        lossDDist.backward()
         optimizerDDist.step()
+        totalLossDDist = total_lossDDist_real + total_lossDDist_gen
 
-        lossD = lossDClass + lossDDist
+        totalLossD = totalLossDClass + totalLossDDist
 
         ############################
         # (2) Update G network
         ###########################
-        for p in netDDist.parameters():
-            p.requires_grad = False # to avoid computation
+        # for p in netDDist.parameters():
+        #     p.requires_grad = False # to avoid computation
         for p in netDClass.parameters():
             p.requires_grad = False # to avoid computation
         for p in netG.parameters():
             p.requires_grad = True
-#        for p in netC.parameters():
-#            p.requires_grad = False # to avoid computation
 
         netG.zero_grad()
         traingenimages = netG(trainrealimages, noise)
         output_0 = netDClass(traingenimages, onehottrainreallabels)
         # True/Fake Loss
-        if opt.kldiv:
-           lossG_Class = BCELoss(output_0, label_1)
-        else:
-           lossG_Class = output_0.mean()
-        lossG_Class.backward(mone, retain_graph=True)
-        total_lossG_Class += - lossG_Class.item()
+        lossG_Class = BCELoss(output_0, label_1)
+        total_lossG_Class += lossG_Class.item()
         # Distance loss
         output_1 = netDDist(trainrealimages, traingenimages)
-        if opt.kldiv:
-            lossG_Dist = BCELoss(output_1, label_1)
-        else:
-            lossG_Dist= output_1.mean()
-        lossG_Dist.backward(mone, retain_graph=True)
-        total_lossG_Dist += - lossG_Dist.item()
+        lossG_Dist = BCELoss(output_1, label_1)
+        total_lossG_Dist += lossG_Dist.item()
 
         # Label cross entropy  loss term
         logitsgenlabels = netC(traingenimages)
+# #        maskedlogitsgenlabels = nn.functional.log_softmax(logitsgenlabels, dim=1).mul(onehottrainreallabels).sum(dim=1)
         maskedlogitsgenlabels = nn.functional.softmax(logitsgenlabels, dim=1).mul(onehottrainreallabels).sum(dim=1)
-        #if opt.kldiv:
-        #    lossG_CE = nn.BCELoss(maskedlogitsgenlabels, label_1)
-        #else:
-        lossG_CE = maskedlogitsgenlabels.mean()
-        lossG_CE.backward(one)
+        lossG_CE = BCELoss(maskedlogitsgenlabels, label_0)
+# #        lossG_CE = maskedlogitsgenlabels.mean()
         total_lossG_CE += lossG_CE.item()
 
         # Loss
-        lossG = total_lossG_Class + total_lossG_Dist + total_lossG_CE
+        lossG = lossG_CE + lossG_Class + lossG_Dist
+        lossG.backward()
+        totalLossG = total_lossG_Dist + total_lossG_CE + total_lossG_Class
         optimizerG.step()
 
         ############################
         # (3) Update C network
         ###########################
-#        for p in netDDist.parameters():
-#            p.requires_grad = False # to avoid computation
-#        for p in netDClass.parameters():
-#            p.requires_grad = False # to avoid computation
         for p in netG.parameters():
             p.requires_grad = False # to avoid computation
         for p in netC.parameters():
@@ -407,36 +376,36 @@ for epoch in range(opt.niter):
         # train with real
         predtrainreallabels = netC(trainrealimages)
         lossC_CE_real = CELoss(predtrainreallabels, trainreallabels)
-        lossC_CE_real.backward(one)
         total_lossC_CE_real += lossC_CE_real.item()
 
         # train with fake
         traingenimages = netG(trainrealimages, noise)
         predtraingenlabels = netC(traingenimages)
         lossC_CE_gen = CELoss(predtraingenlabels, trainreallabels)
-        lossC_CE_gen.backward(one)
         total_lossC_CE_gen += lossC_CE_gen.item()
+        lossC_CE = lossC_CE_real + lossC_CE_gen
 
         # train with unlabeled
         if opt.unlbldratio > 0:
             predtrainrealunlbllabels = netC(trainrealunlblimages)
             predlabelsunlbl_softmaxed = nn.functional.softmax(predtrainrealunlbllabels, dim=1)
-            predscoreunlbltrain = predlabelsunlbl_softmaxed.data.max(1, keepdim=True)[0]
-            predclassunlbltrain = predlabelsunlbl_softmaxed.data.max(1, keepdim=True)[1]
+            predscoreunlbltrain = predlabelsunlbl_softmaxed.max(1, keepdim=True)[0]
+            predclassunlbltrain = predlabelsunlbl_softmaxed.max(1, keepdim=True)[1]
             onehottrainrealunlbllabels = onehotlabelssupport.scatter_(1, predclassunlbltrain, 1)
             output_u = (netDClass(trainrealunlblimages, onehottrainrealunlbllabels)).unsqueeze( -1)
-            lossCClass_unlbl = predscoreunlbltrain.mul(torch.nn.functional.logsigmoid(output_u)).mean()
-            lossCClass_unlbl.backward(mone)
-            totallossCClass_unlbl += - lossCClass_unlbl.item()
-
-        # Loss
-        lossC = total_lossC_CE_real + total_lossC_CE_gen + totallossCClass_unlbl
+            lossCClass_unlbl = predscoreunlbltrain.mul(torch.nn.functional.logsigmoid(-output_u)).mean()
+            totallossCClass_unlbl += lossCClass_unlbl.item()
+            LossC = lossC_CE + lossCClass_unlbl
+        else:
+            LossC = lossC_CE
+        LossC.backward()
+        totalLossC = total_lossC_CE_real + total_lossC_CE_gen + totallossCClass_unlbl
         optimizerC.step()
 
         if epoch % 10 == 0 and epoch > 0:  # print and save loss every 10 epochs
             with torch.no_grad():
                 # get the index of the max log-probability to get the label
-                predclassrealtrain = predtrainreallabels.data.max(1, keepdim=True)[1]
+                predclassrealtrain = predtrainreallabels.max(1, keepdim=True)[1]
                 # count the number of samples correctly classified
                 nbcorrectlabel += predclassrealtrain.eq(trainreallabels.data.view_as(predclassrealtrain)).sum()
                 totalnblabels += trainreallabels.size(0)
@@ -444,8 +413,7 @@ for epoch in range(opt.niter):
 
         gen_iterations += 1
 
-
-    if epoch % 10 == 0 and epoch > 0: # print and save loss every 10 epochs
+    if epoch % 10 == 0 and epoch >= 0: # print and save loss every 10 epochs
 
         # Test C on validation set
         netC.eval()
@@ -453,21 +421,22 @@ for epoch in range(opt.niter):
             nbcorrectval = 0.0
             totalval = 0.0
             valacc = 0.0
-            for valdata in valloader:
-                # Get test images
-                valimages, vallabels = valdata
-                # activate cuda version of the variables if cuda is activated
-                valimages, vallabels = valimages.to(device), vallabels.to(device)
-                # Calculate scores
-                valoutput = netC(valimages)
-                # get the index of the max log-probability to get the label
-                valpred = valoutput.data.max(1, keepdim=True)[1]
-                # count the number of samples correctly classified
-                nbcorrectval += valpred.eq(vallabels.view_as(valpred)).sum()
-                totalval += vallabels.size(0)
-                valacc = 100 * nbcorrectval.item() / totalval
-                # Compute val loss
-                #valloss = CELoss(valoutput, vallabels)
+            if opt.valratio > 0:
+                for valdata in valloader:
+                    # Get test images
+                    valimages, vallabels = valdata
+                    # activate cuda version of the variables if cuda is activated
+                    valimages, vallabels = valimages.to(device), vallabels.to(device)
+                    # Calculate scores
+                    valoutput = netC(valimages)
+                    # get the index of the max log-probability to get the label
+                    valpred = valoutput.max(1, keepdim=True)[1]
+                    # count the number of samples correctly classified
+                    nbcorrectval += valpred.eq(vallabels.view_as(valpred)).sum()
+                    totalval += vallabels.size(0)
+                    valacc = 100 * nbcorrectval.item() / totalval
+                    # Compute val loss
+                    #valloss = CELoss(valoutput, vallabels)
 
             nbcorrecttest = 0.0
             totaltest = 0.0
@@ -480,20 +449,19 @@ for epoch in range(opt.niter):
                 # Calculate scores
                 testoutput = netC(testimages)
                 # get the index of the max log-probability to get the label
-                testpred = testoutput.data.max(1, keepdim=True)[1]
+                testpred = testoutput.max(1, keepdim=True)[1]
                 # count the number of samples correctly classified
                 nbcorrecttest += testpred.eq(testlabels.view_as(testpred)).sum()
                 totaltest += testlabels.size(0)
                 testacc = 100 * nbcorrecttest.item() / totaltest
 
-
-        #if epoch > 100:
-            # Print loss on screen for monitoring
-        loss = '[{0}/{1}] lossDClass: {2} lossDDist {3} lossG: {4} lossC: {5} trainacc {6} valacc {7} testacc {8}'.format(
+    if epoch % 10 == 0 and epoch > 0:  # print and save loss every 10 epochs
+    # Print loss on screen for monitoring
+        loss = '[{0}/{1}] lossD {2} lossDClass: {3} lossDDist {4} lossG: {5} lossGClass: {6} lossGDist: {7} lossGCE: {8} lossC: {9} trainacc {10} valacc {11} testacc {12}'.format(
             epoch, opt.niter,
-            lossDClass, lossDDist,
-            lossG,
-            lossC,
+            totalLossD, totalLossDClass, totalLossDDist,
+            totalLossG, total_lossG_Class, total_lossG_Dist, total_lossG_CE,
+            totalLossC,
             trainacc, valacc, testacc)
         print(loss)
 
@@ -502,21 +470,12 @@ for epoch in range(opt.niter):
         f.write(loss + '\n')
         f.close()
 
-    if (epoch % 100 == 0) and (epoch > 0):
+    if epoch % 10 == 0 and epoch > 0:
         # save some examples
         traingenimages = traingenimages.mul(0.5).add(0.5)
-        vutils.save_image(traingenimages.data, '{0}/{1}_generated_samples.png'.format(opt.outDir, epoch))
-        reftrainimages = reftrainimages.mul(0.5).add(0.5)
-        vutils.save_image(reftrainimages.data, '{0}/{1}_ref_samples.png'.format(opt.outDir, epoch))
+        vutils.save_image(traingenimages, '{0}/{1}_generated_samples.png'.format(opt.outDir, epoch))
         realimages = trainrealimages.mul(0.5).add(0.5)
-        vutils.save_image(realimages.data, '{0}/{1}_real_samples.png'.format(opt.outDir, epoch))
-
-#    if (epoch % 500 == 0) and (epoch > 0):  # save model every 500 epochs
-#        # save final models
-#        torch.save(netDClass.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
-#        torch.save(netDDist.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
-#        torch.save(netG.state_dict(), '{0}/netG_epoch_{1}.pth'.format(opt.outDir, epoch))
-#        torch.save(netC.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
+        vutils.save_image(realimages, '{0}/{1}_real_samples.png'.format(opt.outDir, epoch))
 
 # save final models
 torch.save(netDClass.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
