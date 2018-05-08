@@ -85,7 +85,7 @@ class SCTG(nn.Module):
         theta = theta.view(-1, 2, 3)
 
         grid = F.affine_grid(theta, x.size())
-        x = F.grid_sample(x, grid)
+        x = F.grid_sample(x, grid, padding_mode='border')
 
         return x
 
