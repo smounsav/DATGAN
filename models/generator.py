@@ -46,6 +46,8 @@ class SCTG(nn.Module):
             # input is nc x isize x isize
             nn.Conv2d(nc, n_filter_1, 3, 1, 1, bias=False),
             nn.LeakyReLU(0.2),
+            weight_norm(nn.Conv2d(n_filter_1, n_filter_1, 3, 1, 1, bias=False)),
+            nn.LeakyReLU(0.2),
             weight_norm(nn.Conv2d(n_filter_1, n_filter_1, 3, 2, 1, bias=False)),
             nn.LeakyReLU(0.2),
             nn.Dropout(p=0.5),
@@ -67,7 +69,7 @@ class SCTG(nn.Module):
         # Regressor for the 3 * 2 affine matrix
         self.fc_loc = nn.Sequential(
             nn.Linear(192 + nz, 32),
-            nn.ReLU(True),
+            nn.ReLU(),
             nn.Linear(32, 3 * 2)
         )
 
@@ -85,7 +87,7 @@ class SCTG(nn.Module):
         theta = theta.view(-1, 2, 3)
 
         grid = F.affine_grid(theta, x.size())
-        x = F.grid_sample(x, grid, padding_mode='border')
+        x = F.grid_sample(x, grid)
 
         return x
 
