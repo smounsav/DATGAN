@@ -18,6 +18,7 @@ import models.classifier as classifier_model
 import models.generator as generator_model
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--cuda'  , action='store_true', help='enables cuda')
 parser.add_argument('--dataset', required=True, help='cifar10 | svhn | folder')
 parser.add_argument('--dataroot', required=True, help='path to dataset')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
@@ -35,20 +36,20 @@ parser.add_argument('--niter', type=int, default=25, help='number of epochs to t
 parser.add_argument('--lrD', type=float, default=0.0005, help='learning rate for Critic, default=0.0005')
 parser.add_argument('--lrG', type=float, default=0.0005, help='learning rate for Generator, default=0.0005')
 parser.add_argument('--lrC', type=float, default=0.0005, help='learning rate for Classifier, default=0.0005')
+parser.add_argument('--rmsprop', action='store_true', help='Whether to use rmsprop (default is adam)')
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
-parser.add_argument('--cuda'  , action='store_true', help='enables cuda')
 parser.add_argument('--netG', default='', help="path to netG (to continue training)")
 parser.add_argument('--netDClass', default='', help="path to netDClass (to continue training)")
 parser.add_argument('--netDDist', default='', help="path to netDDist (to continue training)")
 parser.add_argument('--netC', default='', help="path to netC (to continue training)")
 parser.add_argument('--outDir', default=None, help='Where to store samples and models')
-parser.add_argument('--rmsprop', action='store_true', help='Whether to use rmsprop (default is adam)')
 opt = parser.parse_args()
 print(opt)
 
 assert 0 <= opt.valratio <= 1, 'Error: invalid validation data ratio. valratio should be 0 <= valratio <= 1'
 assert 0 <= opt.unlbldratio <= 1, 'Error: invalid unlabeled data ratio. unlbldratio should be 0 <= unlbldratio <= 1'
 
+# define output directory
 if opt.outDir is None:
     now = datetime.datetime.now().timetuple()
     opt.outDir = 'run-' + str(now.tm_year) + str(now.tm_mon) + str(now.tm_mday) + str(now.tm_hour) + str(now.tm_min) + str(now.tm_sec)
@@ -59,7 +60,7 @@ print("Random Seed: ", opt.manualSeed)
 random.seed(opt.manualSeed)
 torch.manual_seed(opt.manualSeed)
 
-# activate cuda acceleration if available
+# start cudnn autotuner
 cudnn.benchmark = True
 if torch.cuda.is_available() and not opt.cuda:
     print("WARNING: You have a CUDA device, so you should probably run with --cuda")
@@ -73,15 +74,18 @@ else:
 
 # define preprocessing transformations
 transformTrain=transforms.Compose([
-   # transforms.RandomCrop(32, padding=4),
-   # transforms.RandomHorizontalFlip(),
-   # transforms.RandomRotation(180),
+   transforms.RandomCrop(32, padding=4),
+   transforms.RandomHorizontalFlip(),
+   # transforms.RandomVerticalFlip(),
+   # transforms.RandomRotation(10),
    transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
+   transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
+#   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
 
 transform=transforms.Compose([
    transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
+   transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
+#   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
 
 if opt.dataset in ['folder']:
     # folder dataset
@@ -192,7 +196,7 @@ if opt.netG != '':
     netG.load_state_dict(torch.load(opt.netG))
 print(netG)
 if opt.netC != '':
-    netDClass.load_state_dict(torch.load(opt.netC))
+    netC.load_state_dict(torch.load(opt.netC))
 print(netC)
 
 # define helpers for optimisation
@@ -274,7 +278,7 @@ for epoch in range(opt.niter):
 
         # Sample batch of real labeled training images to train DClass
         trainrealimages2, trainreallabels2 = lbldata2
-        batch_size_lbl2 = trainrealimages.size(0)
+        batch_size_lbl2 = trainrealimages2.size(0)
         trainrealimages2 =  trainrealimages2.requires_grad_().to(device)
         trainreallabels2 = trainreallabels2.to(device)
         # converting labels to one hot encoding form
@@ -285,7 +289,6 @@ for epoch in range(opt.niter):
         noise = torch.FloatTensor(batch_size_lbl, nz, 1, 1).normal_(0, 1).requires_grad_().to(device)
         label_1 = torch.FloatTensor(batch_size_lbl).fill_(1).to(device)
         label_0 = torch.FloatTensor(batch_size_lbl).fill_(0).to(device)
-
 
         # Sample batch of real unlabeled training images
         if opt.unlbldratio > 0:
@@ -324,7 +327,6 @@ for epoch in range(opt.niter):
             lossDClass_unlbl = BCEWithLogitsLoss(output_u, label_0u)
             lossDClass += lossDClass_unlbl
             totalLossDClassUnlbl += lossDClass_unlbl.item()
-
 
         lossDClass.backward(retain_graph = True)
         totalLossDClass = totalLossDClassReal + totalLossDClassGen + totalLossDClassUnlbl
@@ -513,4 +515,4 @@ for epoch in range(opt.niter):
 torch.save(netDClass.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
 torch.save(netDDist.state_dict(), '{0}/netDDist_epoch_{1}.pth'.format(opt.outDir, epoch))
 torch.save(netG.state_dict(), '{0}/netG_epoch_{1}.pth'.format(opt.outDir, epoch))
-torch.save(netC.state_dict(), '{0}/netDClass_epoch_{1}.pth'.format(opt.outDir, epoch))
+torch.save(netC.state_dict(), '{0}/netC_epoch_{1}.pth'.format(opt.outDir, epoch))
