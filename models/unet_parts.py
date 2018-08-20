@@ -5,6 +5,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.nn.utils as U
 
 class double_conv(nn.Module):
     '''(conv => BN => ReLU) * 2'''
@@ -12,10 +13,14 @@ class double_conv(nn.Module):
         super(double_conv, self).__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, 3, padding=1),
+#            U.weight_norm(nn.Conv2d(in_ch, out_ch, 3, padding=1)),
             nn.BatchNorm2d(out_ch),
+#            nn.InstanceNorm2d(out_ch),
             nn.LeakyReLU(0.2),
             nn.Conv2d(out_ch, out_ch, 3, padding=1),
+#            U.weight_norm(nn.Conv2d(out_ch, out_ch, 3, padding=1)),
             nn.BatchNorm2d(out_ch),
+#            nn.InstanceNorm2d(out_ch),
             nn.LeakyReLU(0.2)
         )
 
@@ -23,12 +28,11 @@ class double_conv(nn.Module):
         x = self.conv(x)
         return x
 
-
 class inconv(nn.Module):
-    def __init__(self, in_ch, out_ch, nz):
+    def __init__(self, isize, in_ch, out_ch, nz):
         super(inconv, self).__init__()
-        self.conv = double_conv(in_ch, int(out_ch / 2))
-        self.project = nn.ConvTranspose2d(nz, int(out_ch / 2), 32, 1, 0, bias=False)
+        self.conv = double_conv(in_ch, int(out_ch * 0.5))
+        self.project = nn.ConvTranspose2d(nz, int(out_ch * 0.5), isize, 1, 0, bias=False)
 
     def forward(self, x, z):
         x = self.conv(x)
@@ -55,7 +59,7 @@ class up(nn.Module):
         super(up, self).__init__()
 
         if bilinear:
-            self.up = nn.UpsamplingBilinear2d(scale_factor=2)
+            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         else:
             self.up = nn.ConvTranspose2d(in_ch, out_ch, 2, stride=2)
         self.conv = double_conv(in_ch, out_ch)
