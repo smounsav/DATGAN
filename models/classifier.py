@@ -1,8 +1,11 @@
 import torch.nn as nn
+import torch.nn.parallel
 import torch.nn.utils.weight_norm as weight_norm
+
 class cnnClass(nn.Module):
-    def __init__(self, nc, nfilter):
+    def __init__(self, nc, nfilter, ngpu):
         super(cnnClass, self).__init__()
+        self.ngpu = ngpu
         self.nfilter = nfilter
         
         features = nn.Sequential()
@@ -42,15 +45,18 @@ class cnnClass(nn.Module):
         self.fc = fc
         
     def forward(self, input):
-    
-        x = self.features.forward(input)
+        if isinstance(input, torch.cuda.FloatTensor) and self.ngpu > 1:
+            x = nn.parallel.data_parallel(self.features, input, range(self.ngpu))
+        else:
+            x = self.features(input)
         x = x.view(-1, self.nfilter *4 *4 *4)
         return self.fc.forward(x)
 
 
 class badGanClass(nn.Module):
-    def __init__(self, nc, nfilter):
+    def __init__(self, isize, nc, nfilter, ngpu):
         super(badGanClass, self).__init__()
+        self.ngpu = ngpu
         self.nfilter = nfilter
 
         n_filter_1 = int(nfilter * 1.5)
@@ -59,7 +65,7 @@ class badGanClass(nn.Module):
         features = nn.Sequential()
         # input is nc x isize x isize
         features.add_module('initial1_0_conv_{0}_{1}'.format(nc, n_filter_1),
-                            weight_norm(nn.Conv2d(nc, n_filter_1, 3, 1, 1, bias=False)))
+                            weight_norm(nn.Conv2d(nc, n_filter_1, 3, int(isize / 32), 1, bias=False)))
         features.add_module('initial1_0_relu_{0}'.format(n_filter_1),
                             nn.LeakyReLU(0.2))
         features.add_module('initial1_1_conv_{0}_{1}'.format(n_filter_1, n_filter_1),
@@ -108,6 +114,9 @@ class badGanClass(nn.Module):
         self.fc = fc
 
     def forward(self, input):
-        x = self.features.forward(input)
+        if isinstance(input, torch.cuda.FloatTensor) and self.ngpu > 1:
+            x = nn.parallel.data_parallel(self.features, input, range(self.ngpu))
+        else:
+            x = self.features(input)
         x = x.mean(3).mean(2)
         return self.fc.forward(x)
