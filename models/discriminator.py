@@ -1,10 +1,12 @@
 import torch
 import torch.nn as nn
+import torch.nn.parallel
 import torch.nn.utils.weight_norm as weight_norm
 
 class DClass(nn.Module):
-    def __init__(self, isize, nc, ndf, nclass):
+    def __init__(self, isize, nc, ndf, nclass, ngpu):
         super(DClass, self).__init__()
+        self.ngpu = ngpu
         assert isize % 16 == 0, "isize has to be a multiple of 16"
 
         inputimage = nn.Sequential()
@@ -51,14 +53,19 @@ class DClass(nn.Module):
         inputim = self.inputimage(images)
         inputlbl = self.inputlabel(labels.unsqueeze(-1).unsqueeze(-1))
         output = torch.cat([inputim, inputlbl], 1)
-        output = self.layers(output)
-        output = self.final(output)
+        if isinstance(output, torch.cuda.FloatTensor) and self.ngpu > 1:
+            output = nn.parallel.data_parallel(self.layers, output, range(self.ngpu))
+            output = nn.parallel.data_parallel(self.final, output, range(self.ngpu))
+        else:
+            output = self.layers(output)
+            output = self.final(output)
         return output.view(-1)
 
 
 class DDist(nn.Module):
-    def __init__(self, isize, nc, ndf):
+    def __init__(self, isize, nc, ndf, ngpu):
         super(DDist, self).__init__()
+        self.ngpu = ngpu
         assert isize % 16 == 0, "isize has to be a multiple of 16"
 
         inputimage = nn.Sequential()
@@ -95,14 +102,19 @@ class DDist(nn.Module):
     def forward(self, image1, image2):
         inputim1 = self.inputimage(image1)
         inputim2 = self.inputimage(image2)
-        inputcat = torch.cat([inputim1, inputim2], 1)
-        output = self.layers(inputcat)
-        output = self.final(output)
+        output = torch.cat([inputim1, inputim2], 1)
+        if isinstance(output, torch.cuda.FloatTensor) and self.ngpu > 1:
+            output = nn.parallel.data_parallel(self.layers, output, range(self.ngpu))
+            output = nn.parallel.data_parallel(self.final, output, range(self.ngpu))
+        else:
+            output = self.layers(output)
+            output = self.final(output)
         return output.view(-1)
 
 class badGanDClass(nn.Module):
-    def __init__(self, isize, nc, nfilter, nclass):
+    def __init__(self, isize, nc, nfilter, nclass, ngpu):
         super(badGanDClass, self).__init__()
+        self.ngpu = ngpu
         assert isize % 16 == 0, "isize has to be a multiple of 16"
         self.nfilter = nfilter
 
@@ -113,7 +125,7 @@ class badGanDClass(nn.Module):
         inputimage = nn.Sequential()
         # input is nc x isize x isize
         inputimage.add_module('inputimage_conv_{0}_{1}'.format(nc, n_filter_0),
-                        nn.Conv2d(nc, n_filter_0, 3, 1, 1, bias=False))
+                        nn.Conv2d(nc, n_filter_0, 3, int(isize / 32), 1, bias=False))
         inputimage.add_module('inputimage_relu_{0}'.format(n_filter_0),
                         nn.LeakyReLU(0.2))
         self.inputimage = inputimage
@@ -170,6 +182,8 @@ class badGanDClass(nn.Module):
                             weight_norm(nn.Conv2d(n_filter_2, n_filter_2, 1, 1, 0, bias=False)))
         features.add_module('initial3_2_relu_{0}'.format(n_filter_2),
                             nn.LeakyReLU(0.2))
+        # features.add_module('initial3_dropout',
+        #               nn.Dropout(p=0.5))
         self.features = features
         fc = nn.Sequential()
         fc.add_module('linear_{0}_{1}'.format(n_filter_2, 1),
@@ -181,13 +195,17 @@ class badGanDClass(nn.Module):
         inputim = self.inputimage(images)
         inputlbl = self.inputlabel(labels.unsqueeze(-1).unsqueeze(-1))
         output = torch.cat([inputim, inputlbl], 1)
-        x = self.features.forward(output)
+        if isinstance(output, torch.cuda.FloatTensor) and self.ngpu > 1:
+            x = nn.parallel.data_parallel(self.features, output, range(self.ngpu))
+        else:
+            x = self.features(output)
         x = x.mean(3).mean(2)
         return self.fc.forward(x).view(-1)
 
 class badGanDDist(nn.Module):
-    def __init__(self, isize, nc, nfilter,):
+    def __init__(self, isize, nc, nfilter, ngpu):
         super(badGanDDist, self).__init__()
+        self.ngpu = ngpu
         assert isize % 16 == 0, "isize has to be a multiple of 16"
         self.nfilter = nfilter
 
@@ -198,7 +216,7 @@ class badGanDDist(nn.Module):
         inputimage = nn.Sequential()
         # input is nc x isize x isize
         inputimage.add_module('inputimage_conv_{0}_{1}'.format(nc, n_filter_0),
-                              nn.Conv2d(nc, n_filter_0, 3, 1, 1, bias=False))
+                              nn.Conv2d(nc, n_filter_0, 3, int(isize / 32), 1, bias=False))
         inputimage.add_module('inputimage_relu_{0}'.format(n_filter_0),
                               nn.LeakyReLU(0.2))
         self.inputimage = inputimage
@@ -247,6 +265,8 @@ class badGanDDist(nn.Module):
                             weight_norm(nn.Conv2d(n_filter_2, n_filter_2, 1, 1, 0, bias=False)))
         features.add_module('initial3_2_relu_{0}'.format(n_filter_2),
                             nn.LeakyReLU(0.2))
+        # features.add_module('initial3_dropout',
+        #               nn.Dropout(p=0.5))
         self.features = features
         fc = nn.Sequential()
         fc.add_module('linear_{0}_{1}'.format(n_filter_2, 1),
@@ -258,6 +278,9 @@ class badGanDDist(nn.Module):
         inputim1 = self.inputimage(image1)
         inputim2 = self.inputimage(image2)
         output = torch.cat([inputim1, inputim2], 1)
-        x = self.features.forward(output)
+        if isinstance(output, torch.cuda.FloatTensor) and self.ngpu > 1:
+            x = nn.parallel.data_parallel(self.features, output, range(self.ngpu))
+        else:
+            x = self.features(output)
         x = x.mean(3).mean(2)
         return self.fc.forward(x).view(-1)
