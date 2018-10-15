@@ -11,7 +11,6 @@ import torchvision.datasets as dset
 import torchvision.transforms as transforms
 import torchvision.utils as vutils
 from torch.utils.data.sampler import SubsetRandomSampler
-import datetime
 from utils import logger as logger
 from utils import toOneHot as toOneHot
 import torch.optim.lr_scheduler as scheduler
