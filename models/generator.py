@@ -8,8 +8,9 @@ import torch.nn.parallel
 import torch.nn.utils.weight_norm as weight_norm
 
 class UNet(nn.Module):
-    def __init__(self, isize, n_channels_in, n_channels_out, nz, ngpu):
+    def __init__(self, isize, n_channels_in, n_channels_out, nz, ngpu, stn):
         super(UNet, self).__init__()
+        self.stn = stn
         self.ngpu = ngpu
         self.inc = inconv(isize, n_channels_in, 64, nz)
         self.down1 = down(64, 128)
@@ -22,16 +23,17 @@ class UNet(nn.Module):
         self.up4 = up(128, 64)
         self.outc = outconv(64, n_channels_out)
 
-        # Regressor for the 3 * 2 affine matrix
-        self.fc_loc = nn.Sequential(
-            nn.Linear(1024, 32),
-            nn.ReLU(),
-            nn.Linear(32, 3 * 2)
-        )
+        if stn:
+            # Regressor for the 3 * 2 affine matrix
+            self.fc_loc = nn.Sequential(
+                nn.Linear(1024, 32),
+                nn.ReLU(),
+                nn.Linear(32, 3 * 2)
+            )
 
-        # Initialize the weights/bias with identity transformation
-        self.fc_loc[2].weight.data.zero_()
-        self.fc_loc[2].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
+            # Initialize the weights/bias with identity transformation
+            self.fc_loc[2].weight.data.zero_()
+            self.fc_loc[2].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
 
     def forward(self, x, z):
         x1 = self.inc(x, z)
@@ -39,23 +41,30 @@ class UNet(nn.Module):
         x3 = self.down2(x2)
         x4 = self.down3(x3)
         x5 = self.down4(x4)
-        xs = x5
-        xs = xs.mean(3).mean(2)
-        xs = xs.view(-1, 1024)
-        theta = self.fc_loc(xs)
-        theta = theta.view(-1, 2, 3)
-        grid = F.affine_grid(theta, x.size())
-        xstn = F.grid_sample(x, grid)
-        x1stn = self.inc(xstn, z)
-        x2stn = self.down1(x1stn)
-        x3stn = self.down2(x2stn)
-        x4stn = self.down3(x3stn)
-        x5stn = self.down4(x4stn)
-        x = self.up1(x5stn, x4stn)
-        x = self.up2(x, x3stn)
-        x = self.up3(x, x2stn)
-        x = self.up4(x, x1stn)
-        x = self.outc(x)
+        if self.stn:
+            xs = x5
+            xs = xs.mean(3).mean(2)
+            xs = xs.view(-1, 1024)
+            theta = self.fc_loc(xs)
+            theta = theta.view(-1, 2, 3)
+            grid = F.affine_grid(theta, x.size())
+            xstn = F.grid_sample(x, grid)
+            x1stn = self.inc(xstn, z)
+            x2stn = self.down1(x1stn)
+            x3stn = self.down2(x2stn)
+            x4stn = self.down3(x3stn)
+            x5stn = self.down4(x4stn)
+            x = self.up1(x5stn, x4stn)
+            x = self.up2(x, x3stn)
+            x = self.up3(x, x2stn)
+            x = self.up4(x, x1stn)
+            x = self.outc(x)
+        else:
+            x = self.up1(x5, x4)
+            x = self.up2(x, x3)
+            x = self.up3(x, x2)
+            x = self.up4(x, x1)
+            x = self.outc(x)
         return x
 
 class SCTG(nn.Module):
@@ -124,4 +133,42 @@ class SCTG(nn.Module):
             x = nn.parallel.data_parallel(self.stn, x, range(self.ngpu))
         else:
             x = self.stn(x)
+        return x
+
+class badGanGen(nn.Module):
+    def __init__(self, isize, nc, nz, nclass, ngpu):
+        super(badGanGen, self).__init__()
+        self.ngpu = ngpu
+        assert isize % 16 == 0, "isize has to be a multiple of 16"
+
+        # input 1 is noise of size nz
+        self.inputnoise = nn.Sequential(
+            nn.Linear(nz, 512 * 2 * 2),
+            nn.BatchNorm1d(512 * 2 * 2),
+            nn.ReLU())
+
+        # input 2 is nclass
+        self.inputlabel= nn.Sequential(
+            nn.Linear(nclass, 512 * 2 * 2),
+            nn.BatchNorm1d(512 * 2 * 2),
+            nn.ReLU())
+
+        # input is 1024 x 2 x 2
+        self.features = nn.Sequential(
+            nn.ConvTranspose2d(1024, 512, 5, 2, 2, 1, bias=False), nn.BatchNorm2d(512), nn.ReLU(),
+            nn.ConvTranspose2d(512, 256, 5, 2, 2, 1, bias=False), nn.BatchNorm2d(256), nn.ReLU(),
+            nn.ConvTranspose2d(256, 256, 5, 2, 2, 1, bias=False), nn.BatchNorm2d(256), nn.ReLU(),
+            nn.ConvTranspose2d(256, 128, 5, 2, 2, 1, bias=False), nn.BatchNorm2d(128), nn.ReLU(),
+            weight_norm(nn.ConvTranspose2d(128, nc, 5, 1, 2, 0)),
+            nn.Tanh())
+
+
+    def forward(self, labels, noise):
+        inputnoi = self.inputnoise(noise)
+        inputlbl = self.inputlabel(labels)
+        output = torch.cat([inputnoi.view(inputnoi.size(0), 512, 2, 2), inputlbl.view(inputnoi.size(0), 512, 2, 2)], 1)
+        if isinstance(output, torch.cuda.FloatTensor) and self.ngpu > 1:
+            x = nn.parallel.data_parallel(self.features, output, range(self.ngpu))
+        else:
+            x = self.features(output)
         return x
