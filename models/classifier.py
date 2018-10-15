@@ -1,13 +1,11 @@
 import torch.nn as nn
-import torch.nn.parallel
 import torch.nn.utils.weight_norm as weight_norm
 
 class cnnClass(nn.Module):
-    def __init__(self, nc, nfilter, ngpu):
+    def __init__(self, nc, nfilter):
         super(cnnClass, self).__init__()
-        self.ngpu = ngpu
         self.nfilter = nfilter
-        
+
         features = nn.Sequential()
         # input is nc x isize x isize
         features.add_module('initial_conv_{0}_{1}'.format(nc, nfilter),
@@ -15,7 +13,7 @@ class cnnClass(nn.Module):
         features.add_module('initial_relu_{0}'.format(nfilter),
                         nn.LeakyReLU(0.2))
         in_feat = nfilter
-        out_feat = nfilter * 2                        
+        out_feat = nfilter * 2
         features.add_module('features_{0}_{1}_conv'.format(in_feat, out_feat),
                         nn.Conv2d(in_feat, out_feat, 4, 2, 1, bias=False))
 #        features.add_module('features.{0}.batchnorm'.format(out_feat),
@@ -43,20 +41,16 @@ class cnnClass(nn.Module):
         fc.add_module('linear_{0}_{1}_dropout'.format(1024, 10),
                       nn.Dropout(p=0.5))
         self.fc = fc
-        
+
     def forward(self, input):
-        if isinstance(input, torch.cuda.FloatTensor) and self.ngpu > 1:
-            x = nn.parallel.data_parallel(self.features, input, range(self.ngpu))
-        else:
-            x = self.features(input)
+        x = self.features(input)
         x = x.view(-1, self.nfilter *4 *4 *4)
         return self.fc.forward(x)
 
 
 class badGanClass(nn.Module):
-    def __init__(self, isize, nc, nfilter, ngpu):
+    def __init__(self, isize, nc, nfilter):
         super(badGanClass, self).__init__()
-        self.ngpu = ngpu
         self.nfilter = nfilter
 
         n_filter_1 = int(nfilter * 1.5)
@@ -114,9 +108,6 @@ class badGanClass(nn.Module):
         self.fc = fc
 
     def forward(self, input):
-        if isinstance(input, torch.cuda.FloatTensor) and self.ngpu > 1:
-            x = nn.parallel.data_parallel(self.features, input, range(self.ngpu))
-        else:
-            x = self.features(input)
+        x = self.features(input)
         x = x.mean(3).mean(2)
         return self.fc.forward(x)

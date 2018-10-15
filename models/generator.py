@@ -4,14 +4,12 @@
 # python 3 confusing imports :(
 from .unet_parts import *
 import torch.nn as nn
-import torch.nn.parallel
 import torch.nn.utils.weight_norm as weight_norm
 
 class UNet(nn.Module):
-    def __init__(self, isize, n_channels_in, n_channels_out, nz, ngpu, stn):
+    def __init__(self, isize, n_channels_in, n_channels_out, nz, stn):
         super(UNet, self).__init__()
         self.stn = stn
-        self.ngpu = ngpu
         self.inc = inconv(isize, n_channels_in, 64, nz)
         self.down1 = down(64, 128)
         self.down2 = down(128, 256)
@@ -68,9 +66,8 @@ class UNet(nn.Module):
         return x
 
 class SCTG(nn.Module):
-    def __init__(self, isize, nc, nfilter, nz, ngpu):
+    def __init__(self, isize, nc, nfilter, nz):
         super(SCTG, self).__init__()
-        self.ngpu = ngpu
         assert isize % 16 == 0, "isize has to be a multiple of 16"
         self.nfilter = nfilter
         n_filter_0 = int(nfilter * 0.75)
@@ -129,16 +126,12 @@ class SCTG(nn.Module):
 
     def forward(self, x):
         # transform the input
-        if isinstance(x, torch.cuda.FloatTensor) and self.ngpu > 1:
-            x = nn.parallel.data_parallel(self.stn, x, range(self.ngpu))
-        else:
-            x = self.stn(x)
+        x = self.stn(x)
         return x
 
 class badGanGen(nn.Module):
-    def __init__(self, isize, nc, nz, nclass, ngpu):
+    def __init__(self, isize, nc, nz, nclass):
         super(badGanGen, self).__init__()
-        self.ngpu = ngpu
         assert isize % 16 == 0, "isize has to be a multiple of 16"
 
         # input 1 is noise of size nz
@@ -162,13 +155,9 @@ class badGanGen(nn.Module):
             weight_norm(nn.ConvTranspose2d(128, nc, 5, 1, 2, 0)),
             nn.Tanh())
 
-
     def forward(self, labels, noise):
         inputnoi = self.inputnoise(noise)
         inputlbl = self.inputlabel(labels)
         output = torch.cat([inputnoi.view(inputnoi.size(0), 512, 2, 2), inputlbl.view(inputnoi.size(0), 512, 2, 2)], 1)
-        if isinstance(output, torch.cuda.FloatTensor) and self.ngpu > 1:
-            x = nn.parallel.data_parallel(self.features, output, range(self.ngpu))
-        else:
-            x = self.features(output)
+        x = self.features(output)
         return x

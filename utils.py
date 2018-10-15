@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 def logger(directory, filename, string):

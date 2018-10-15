@@ -1,4 +1,3 @@
-from __future__ import print_function
 import os
 import argparse
 import random
@@ -11,59 +10,68 @@ import torch.utils.data
 import torchvision.datasets as dset
 import torchvision.transforms as transforms
 from torch.utils.data.sampler import SubsetRandomSampler
-import datetime
-from utils import logger as logger
 
-import models.resnet as resnet_model
+from utils import logger as logger
+from cutout import Cutout as Cutout
+
 import models.classifier as classifier_model
 import models.wide_resnet as wide_resnet_model
+import models.resnet as resnet_model
+import models.preact_resnet as preact_resnet_model
+import models.shake_resnet as shake_resnet_model
 import models.generator as generator_model
 
 parser = argparse.ArgumentParser()
+# dataset
 parser.add_argument('--dataset', required=True, help='cifar10 | svhn | mnist | stl10 | folder')
 parser.add_argument('--dataroot', required=True, help='path to dataset')
-parser.add_argument('--da', action='store_true', help='Whether to apply data augmentation to training dataset')
-parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
 parser.add_argument('--trainsetsize', type=int, help='size of training dataset to use, -1 = full dataset', default=-1)
 parser.add_argument('--valratio', type=float, default=0.3, help='ratio of the labeled train dataset to be used as validation set')
 parser.add_argument('--imageSize', type=int, default=32, help='the height / width of the input image to network')
-parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
 parser.add_argument('--nc', type=int, default=3, help='input image channels')
+# dataset preprocessing
+parser.add_argument('--da', action='store_true', help='Whether to apply data augmentation to training dataset')
+parser.add_argument('--cutout', action='store_true', help='Whether to apply Cutout on training dataset')
+parser.add_argument('--cutoutsize', type=int, default=16, help='Cutout size to apply on training dataset')
+# model
+parser.add_argument('--classModel', default='badGAN', help='badGAN | WRN | ResNet18 | ResNetPA | ShakeShake, default=badGAN')
+parser.add_argument('--RNDepth', type=int, default=28, help='Depth factor for Wide ResNet and ShakeShake')
+parser.add_argument('--RNWidth', type=int, default=10, help='Width factor for Wide ResNet and ShakeShake')
+parser.add_argument('--RNDO', type=float, default=0.3, help='DropOut rate for Wide ResNet')
+parser.add_argument('--nostn'  , action='store_true', help='Deactivate STN in generator')
 parser.add_argument('--nz', type=int, default=100, help='size of the latent z vector for generator')
 parser.add_argument('--ncf', type=int, default=64, help='initial number of filters netC')
+# training
+parser.add_argument('--batchSize', type=int, default=64, help='input batch size')
 parser.add_argument('--niter', type=int, default=25, help='number of epochs to train for')
 parser.add_argument('--optim', default='adam', help='sgd | rmsprop | adam (default is adam)')
-parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--lrC', type=float, default=0.0005, help='learning rate for netC, default=0.0005')
-
-
+parser.add_argument('--momentum', type=float, default=0.9, help='momentum for SGD optimizer, default=0.9')
+parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
+parser.add_argument('--weight_decay', type=float, default=0.0005, help='weight decay factor for SGD optimizer, default=0.0005')
+parser.add_argument('--sched', action='store_true', help='Activate LR rate decay scheduler')
+# checkpoints
 parser.add_argument('--netC', default='', help="path to previously saved model (to continue training)")
 parser.add_argument('--netG', default='', help="path to netG (to continue training)")
+# system
+parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
 parser.add_argument('--outDirPrefix', default=None, help='Additional text for output path')
 parser.add_argument('--outDir', default=None, help='Where to store samples and models')
 parser.add_argument('--outDirSuffix', default=None, help='Additional text for output path')
 parser.add_argument('--cuda'  , action='store_true', help='enables cuda')
 parser.add_argument('--ngpu'  , type=int, default=1, help='number of GPUs to use')
-parser.add_argument('--classModel', required=True, help='badGAN | WRN | ResNet18 | ResNetPA | ShakeShake')
-#parser.add_argument('--WRN', action='store_true', help='Use a Wide ResNet as Classifier')
-parser.add_argument('--WRNDepth', type=int, default=28, help='Depth factor of the Wide ResNet')
-parser.add_argument('--WRNWidth', type=int, default=10, help='Width factor of the Wide ResNet')
-parser.add_argument('--WRNDO', type=float, default=0.3, help='DropOut rate of the Wide ResNet')
-parser.add_argument('--nostn'  , action='store_true', help='Deactivate STN in generator')
-parser.add_argument('--sched', action='store_true', help='Activate LR rate decay scheduler')
+parser.add_argument('--pinnedmemory', action='store_true', help='Whether to use GPU pinned memory')
 
 opt = parser.parse_args()
 
 assert 0 <= opt.valratio <= 1, 'Error: invalid validation data ratio. valratio should be 0 <= valratio <= 1'
 
+# create output directory
 if opt.outDirPrefix is not None:
     outDir = str(opt.outDirPrefix)
 else:
     outDir = ''
-
 if opt.outDir is None:
-    # now = datetime.datetime.now().timetuple()
-    # opt.outDir = 'run-' + str(now.tm_year) + str(now.tm_mon) + str(now.tm_mday) + str(now.tm_hour) + str(now.tm_min) + str(now.tm_sec)
     outDir = outDir + str(opt.dataset).upper() + 'baseline' + 'N' + str(opt.trainsetsize) + 'M' + str(opt.classModel) + 'C' + str(opt.lrC).replace('.', '')
 if opt.nostn:
     outDir = outDir + 'NOSTN'
@@ -71,12 +79,11 @@ else:
     outDir = outDir + 'STN'
 if opt.da:
     outDir = outDir + 'DA'
+if opt.cutout:
+    outDir = outDir + 'CO'
 if opt.sched:
     outDir = outDir + 'SCHED'
-
 if opt.outDirSuffix is not None:
-    # now = datetime.datetime.now().timetuple()
-    # opt.outDir = 'run-' + str(now.tm_year) + str(now.tm_mon) + str(now.tm_mday) + str(now.tm_hour) + str(now.tm_min) + str(now.tm_sec)
     outDir = outDir + str(opt.outDirSuffix)
 print(outDir)
 os.system('mkdir {0}'.format(outDir))
@@ -85,158 +92,97 @@ os.system('mkdir {0}'.format(outDir))
 print(opt)
 logger(outDir, 'parameters.txt', str(opt))
 
+# define and log random seed for reproductibility
+opt.manualSeed = random.randint(1, 10000) # fix seed
+print("Random Seed: ", opt.manualSeed)
+random.seed(opt.manualSeed)
+torch.manual_seed(opt.manualSeed)
+logger(outDir, 'parameters.txt', 'Random seed: ' + str(opt.manualSeed)) # log random seed
+
+
 # start cudnn autotuner
 cudnn.benchmark = True
-if torch.cuda.is_available() and not opt.cuda:
-    print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 # activate cuda acceleration if available
-if opt.cuda:
-    device = torch.device("cuda")
-    pinned_memory = True
+if torch.cuda.is_available():
+    if opt.cuda:
+            device = torch.device("cuda")
+            pinned_memory = opt.pinnedmemory
+    else:
+        print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 else:
-    device = torch.device("cpu")
-    pinned_memory = False
+    if opt.cuda:
+        print("WARNING: You have no CUDA device, but you tried to run with --cuda")
+    else:
+        device = torch.device("cpu")
+        pinned_memory = False
 
 # define preprocessing
-transformTrain=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
+if opt.dataset == 'svhn':
+    normalize = transforms.Normalize(mean=[x / 255.0 for x in[109.9, 109.7, 113.8]],
+                                     std=[x / 255.0 for x in [50.1, 50.6, 50.8]])
+elif opt.dataset == 'cifar10':
+    normalize = transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+else:
+    normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 
-transformTrainDA=transforms.Compose([
-   transforms.RandomCrop(32, padding=4),
-   transforms.RandomHorizontalFlip(),
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
+transformTrain = transforms.Compose([])
+if opt.dataset == 'mnist':
+    transformTrain.transforms.append(transforms.Pad(2))
+if opt.da:
+    if opt.dataset in ['mnist']:
+        transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
+        transformTrain.transforms.append(transforms.RandomAffine(10, translate=None, scale=(0.5, 2)))
+    elif opt.dataset in ['svhn']:
+        transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
+        transformTrain.transforms.append(transforms.RandomAffine(10, translate=None, scale=(0.5, 2)))
+    elif opt.dataset in ['cifar10']:
+        transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
+        transformTrain.transforms.append(transforms.RandomHorizontalFlip())
+    else:
+        transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
+        transformTrain.transforms.append(transforms.RandomHorizontalFlip())
+transformTrain.transforms.append(transforms.ToTensor())
+transformTrain.transforms.append(normalize)
+if opt.cutout:
+        transformTrain.transforms.append(Cutout(1, opt.cutoutsize))
 
-transformVal=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
+transformVal = transforms.Compose([
+    transforms.ToTensor(),
+    normalize])
 
-transformTest=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
+transformTest = transforms.Compose([
+    transforms.ToTensor(),
+    normalize])
 
-transformTrainMNIST=transforms.Compose([
-   transforms.Pad(2),
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformTrainMNISTDA=transforms.Compose([
-   transforms.Pad(2),
-   transforms.RandomCrop(32, padding=4),
-   transforms.RandomAffine(10, translate=None, scale=(0.5, 2)),
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformValMNIST=transforms.Compose([
-   transforms.Pad(2),
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformTestMNIST=transforms.Compose([
-   transforms.Pad(2),
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformTrainSTL10=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformTrainSTL10DA=transforms.Compose([
-   transforms.RandomCrop(32, padding=4),
-   transforms.RandomAffine(10, translate=None, scale=(0.5, 2)),
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformValSTL10=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformTestSTL10=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformTrainSVHN=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformTrainSVHNDA=transforms.Compose([
-   transforms.RandomCrop(32, padding=4),
-   transforms.RandomAffine(10, translate=None, scale=(0.5, 2)),
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformValSVHN=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-transformTestSVHN=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]) # normalize images between -1 and 1
-
-
-transformTrainCIFAR10=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
-
-transformTrainCIFAR10DA=transforms.Compose([
-   transforms.RandomCrop(32, padding=4),
-   transforms.RandomHorizontalFlip(),
-   transforms.ToTensor(),
-   transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
-
-transformValCIFAR10=transforms.Compose([
-   transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
-
-transformTestCIFAR10=transforms.Compose([
-   transforms.ToTensor(),
-   transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))])
-
-# define datset and initialise dataloader
+# define dataset and initialise dataloader
 if opt.dataset in ['folder']:
     # folder dataset
-    if opt.da:
-        trainset = dset.ImageFolder(root=opt.dataroot + '/train', transform=transformTrainDA)
-    else:
-        trainset = dset.ImageFolder(root=opt.dataroot + '/train', transform=transformTrain)
+    trainset = dset.ImageFolder(root=opt.dataroot + '/train', transform=transformTrain)
     valset = dset.ImageFolder(root=opt.dataroot + '/train', transform=transformVal)
     testset = dset.ImageFolder(root=opt.dataroot + '/test', transform=transformTest)
     nclasses = len(trainset.classes)
 elif opt.dataset == 'cifar10':
-    if opt.da:
-        trainset = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transformTrainCIFAR10DA)
-    else:
-        trainset = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transformTrainCIFAR10)
-    valset = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transformValCIFAR10)
-    testset = dset.CIFAR10(root=opt.dataroot, train=False, download=True, transform=transformTestCIFAR10)
+    trainset = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transformTrain)
+    valset = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transformVal)
+    testset = dset.CIFAR10(root=opt.dataroot, train=False, download=True, transform=transformTest)
     nclasses = 10
 elif opt.dataset == 'mnist':
-    if opt.da:
-        trainset = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformTrainMNISTDA)
-    else:
-        trainset = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformTrainMNIST)
-    valset = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformValMNIST)
-    testset = dset.MNIST(root=opt.dataroot, train=False, download=True, transform=transformTestMNIST)
+    trainset = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformTrain)
+    valset = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformVal)
+    testset = dset.MNIST(root=opt.dataroot, train=False, download=True, transform=transformTest)
     nclasses = 10
 elif opt.dataset == 'svhn':
-    if opt.da:
-        trainset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transformTrainSVHNDA)
-    else:
-        trainset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transformTrainSVHN)
-    valset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transformValSVHN)
-    testset = dset.SVHN(root=opt.dataroot, split='test', download=True, transform=transformTestSVHN)
+    trainset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transformTrain)
+    valset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transformVal)
+    testset = dset.SVHN(root=opt.dataroot, split='test', download=True, transform=transformTest)
     nclasses = 10
 elif opt.dataset == 'stl10':
-    if opt.da:
-        trainset = dset.STL10(root=opt.dataroot, split='train', download=True, transform=transformTrainSTL10DA)
-    else:
-        trainset = dset.STL10(root=opt.dataroot, split='train', download=True, transform=transformTrainSTL10)
-    valset = dset.STL10(root=opt.dataroot, split='train', download=True, transform=transformValSTL10)
-    testset = dset.STL10(root=opt.dataroot, split='test', download=True, transform=transformTestSTL10)
+    trainset = dset.STL10(root=opt.dataroot, split='train', download=True, transform=transformTrain)
+    valset = dset.STL10(root=opt.dataroot, split='train', download=True, transform=transformVal)
+    testset = dset.STL10(root=opt.dataroot, split='test', download=True, transform=transformTest)
     nclasses = 10
 
-# Separate training data into fully labeled training and fully labeled validation
+# Separate training data into training and validation
 len_train = len(trainset)
 indices_train = list(range(len_train))
 random.shuffle(indices_train)
@@ -280,18 +226,26 @@ if opt.nostn:
 else:
     stn = True
 
-
-# initialise netC
+# initialise Classifier
 if opt.classModel == 'WRN':
-    netC = wide_resnet_model.WideResNet(opt.WRNDepth, nclasses, opt.WRNWidth, opt.WRNDO).to(device)
+    netC = wide_resnet_model.WideResNet(opt.nc, opt.RNDepth, nclasses, opt.RNWidth, opt.RNDO).to(device)
 elif opt.classModel == 'ResNet18':
-    netC = resnet_model.ResNet18().to(device)
+        netC = resnet_model.ResNet18(opt.nc).to(device)
+elif opt.classModel == 'ResNetPA':
+    netC = preact_resnet_model.PreActResNet18(opt.nc).to(device)
+elif opt.classModel == 'ShakeShake':
+    netC = shake_resnet_model.ShakeResNet(opt.nc, opt.RNDepth, opt.RNWidth, nclasses).to(device)
 else:
-    netC = classifier_model.badGanClass(opt.imageSize, opt.nc, opt.ncf, opt.ngpu).to(device)
+    netC = classifier_model.badGanClass(opt.imageSize, opt.nc, opt.ncf).to(device)
 netC.apply(weights_init)
 # Generator
-netG = generator_model.UNet(opt.imageSize, opt.nc, opt.nc, opt.nz, opt.ngpu, stn).to(device)
+netG = generator_model.UNet(opt.imageSize, opt.nc, opt.nc, opt.nz, stn).to(device)
 netG.apply(weights_init)
+
+# configure model for multi GPU is multi GPU activated
+if torch.cuda.is_available() and opt.cuda and opt.ngpu > 1:
+    netG = nn.DataParallel(netG, device_ids=list(range(opt.ngpu)))
+    netC = nn.DataParallel(netC, device_ids=list(range(opt.ngpu)))
 
 # load checkpoint if needed
 if opt.netC != '':
@@ -308,7 +262,7 @@ criterion = nn.CrossEntropyLoss().to(device)
 
 # setup optimizer
 if opt.optim == 'sgd':
-    optimizerC = optim.SGD(netC.parameters(), lr=opt.lrC, momentum=0.9, weight_decay=opt.weight_decay)
+    optimizerC = optim.SGD(netC.parameters(), lr=opt.lrC, momentum=opt.momentum, weight_decay=opt.weight_decay)
 elif opt.optim == 'rmsprop':
     optimizerC = optim.RMSprop(netC.parameters(), lr=opt.lrC)
 else:
@@ -426,4 +380,4 @@ for epoch in range(opt.niter):
         logger(outDir, 'loss.txt', str(txtLoss))
 
 # save final models
-torch.save(netC.state_dict(), '{0}/netC_epoch_{1}.pth'.format(opt.outDir, epoch))
+torch.save(netC.state_dict(), '{0}/netC_epoch_{1}.pth'.format(outDir, epoch))
