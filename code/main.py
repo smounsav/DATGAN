@@ -51,13 +51,13 @@ parser.add_argument('--ndf', type=int, default=64, help='initial number of filte
 parser.add_argument('--ngf', type=int, default=64, help='initial number of filters generator')
 parser.add_argument('--ncf', type=int, default=64, help='initial number of filters classifier')
 parser.add_argument('--diffclass', action='store_true', help='take pairs from different class for DSim')
-parser.add_argument('--sameclass', action='store_true', help='take pairs from same class for DSim')
 # model ablation
 parser.add_argument('--gen', action='store_true', help='Generator will learn a data distribution instead of a transformation')
 parser.add_argument('--nostn', action='store_true', help='Deactivate STN in generator')
-parser.add_argument('--noDClass', action='store_true', help='Deactivate DClass element')
-parser.add_argument('--noClassAdvLoss', action='store_true', help='Deactivate Class adversarial loss for G')
-parser.add_argument('--noDDist', action='store_true', help='Deactivate DDist element')
+parser.add_argument('--onlystn', action='store_true', help='Generator only uses STN to transform image')
+#parser.add_argument('--noDClass', action='store_true', help='Deactivate DClass element')
+#parser.add_argument('--noClassAdvLoss', action='store_true', help='Deactivate Class adversarial loss for G')
+#parser.add_argument('--noDDist', action='store_true', help='Deactivate DDist element')
 # training
 parser.add_argument('--batchSize', type=int, default=64, help='input batch size, default=64')
 parser.add_argument('--niter', type=int, default=25, help='number of epochs to train for')
@@ -74,8 +74,9 @@ parser.add_argument('--momentum', type=float, default=0.9, help='momentum for SG
 parser.add_argument('--weight_decay', type=float, default=0, help='weight decay factor, default=0')
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--sched', action='store_true', help='Activate LR rate decay scheduler')
-parser.add_argument('--manualSeed', type=int, default=None, help='manuel seed')
+parser.add_argument('--fixedSeed', type=int, default=None, help='fix seed')
 # checkpoints
+parser.add_argument('--predParams', default='', help="path to predefined parameters")
 parser.add_argument('--netDClass', default='', help="path to netDClass (to continue training)")
 parser.add_argument('--netDDist', default='', help="path to netDDist (to continue training)")
 parser.add_argument('--netG', default='', help="path to netG (to continue training)")
@@ -117,6 +118,8 @@ if opt.nostn:
     outDir = outDir + 'NOSTN'
 if opt.gen:
     outDir = outDir + 'GEN'
+if opt.onlystn:
+    outDir = outDir + 'ONLYSTN'
 if opt.lightda:
     outDir = outDir + 'LIDA'
 if opt.da:
@@ -157,7 +160,7 @@ if ongoingFile.exists():
     job_running =True
     with open('{0}/job_running'.format(outDir)) as file:
         jobParams = json.loads(file.read())
-    opt.manuelSeed = jobParams['Seed']
+    opt.fixedSeed = jobParams['seed']
     currentIteration = jobParams['currentIteration'] + 1
     train_idx = torch.tensor(jobParams['train_idx'])
     train_idx_2 = torch.tensor(jobParams['train_idx_2'])
@@ -173,25 +176,37 @@ else:
     filelist = glob.glob('{0}/*'.format(outDir))
     for file in filelist:
         os.remove(file)
+    # load predefined parameters
+    if opt.predParams != '':
+        predefinedParams = Path(opt.predParams)
+        if predefinedParams.exists():
+            with open(predefinedParams) as file:
+                jobParams = json.loads(file.read())
+            opt.fixedSeed = jobParams['Random seed']
+            train_idx = torch.tensor(jobParams['Train dataset'])
+            val_idx = torch.tensor(jobParams['Validation dataset'])
+            unlbl_idx = torch.tensor(jobParams['Unlabeled dataset'])
+            print('Predefined parameters loaded\n')
     # log command line parameters
     print(opt)
     logger(outDir, 'parameters.txt', str(opt))
     print('Starting job\n')
 
-# define and log random seed for reproductibility
-if opt.manualSeed is not None:
-    manualSeed = opt.manualSeed
-else:
-    manualSeed = random.randint(1, 10000)
-random.seed(manualSeed)
-torch.manual_seed(manualSeed)
-if not job_running:
-    print("Random Seed: ", manualSeed)
-    logger(outDir, 'parameters.txt', 'Random seed: ' + str(manualSeed)) # log random seed
 
-# start cudnn autotuner
-cudnn.benchmark = True
-# make training deterministic/reproductible
+# define and log random seed for reproductibility
+if opt.fixedSeed is not None:
+    seed = opt.fixedSeed
+else:
+    seed = random.randint(1, 10000)
+random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+if not job_running:
+    print("Random Seed: ", seed)
+    logger(outDir, 'parameters.txt', 'Random seed: ' + str(seed)) # log random seed
+
+# change from cudnn autotuner to cudnn deterministic
+cudnn.benchmark = False
 cudnn.deterministic = True
 
 # activate cuda acceleration if available
@@ -223,6 +238,8 @@ if opt.dataset == 'mnist':
 if opt.lightda:
     if opt.dataset in ['mnist']:
         transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
+    elif opt.dataset in ['svhn']:
+        transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
     elif opt.dataset in ['cifar10']:
         transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
 if opt.da:
@@ -243,6 +260,12 @@ transformTrain.transforms.append(normalize)
 if opt.cutout:
         transformTrain.transforms.append(Cutout(1, opt.cutoutsize))
 
+transformTrainGen = transforms.Compose([])
+if opt.dataset == 'mnist':
+    transformTrainGen.transforms.append(transforms.Pad(2))
+transformTrainGen.transforms.append(transforms.ToTensor())
+transformTrainGen.transforms.append(normalize)
+
 transformVal = transforms.Compose([
     transforms.ToTensor(),
     normalize])
@@ -255,52 +278,55 @@ transformTest = transforms.Compose([
 if opt.dataset in ['folder']:
     # folder dataset
     trainset = dset.ImageFolder(root=opt.dataroot + '/train', transform=transformTrain)
+    trainsetGen = dset.ImageFolder(root=opt.dataroot + '/train', transform=transformTrainGen)
     valset = dset.ImageFolder(root=opt.dataroot + '/train', transform=transformVal)
     testset = dset.ImageFolder(root=opt.dataroot + '/test', transform=transformTest)
     nclasses = len(trainset.classes)
 elif opt.dataset == 'cifar10':
     trainset = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transformTrain)
+    trainsetGen = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transformTrainGen)
     valset = dset.CIFAR10(root=opt.dataroot, train=True, download=True, transform=transformVal)
     testset = dset.CIFAR10(root=opt.dataroot, train=False, download=True, transform=transformTest)
     nclasses = 10
 elif opt.dataset == 'mnist':
     trainset = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformTrain)
+    trainsetGen = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformTrainGen)
     valset = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformVal)
     testset = dset.MNIST(root=opt.dataroot, train=False, download=True, transform=transformTest)
     nclasses = 10
 elif opt.dataset == 'svhn':
     trainset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transformTrain)
+    trainsetGen = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transformTrainGen)
     valset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transformVal)
     testset = dset.SVHN(root=opt.dataroot, split='test', download=True, transform=transformTest)
     nclasses = 10
 elif opt.dataset == 'stl10':
     trainset = dset.STL10(root=opt.dataroot, split='train', download=True, transform=transformTrain)
+    trainsetGen = dset.STL10(root=opt.dataroot, split='train', download=True, transform=transformTrainGen)
     valset = dset.STL10(root=opt.dataroot, split='train', download=True, transform=transformVal)
     testset = dset.STL10(root=opt.dataroot, split='test', download=True, transform=transformTest)
     nclasses = 10
-
-# Separate training data into fully labeled training, fully labeled validation and unlabeled dataset
-len_train = len(trainset)
 if opt.dataset in ['svhn', 'stl10']:
     class_dict = {i: trainset.labels[i] for i in range(len(trainset.labels))}  # to speed up get item in Ddist
 else:
-    class_dict = {i:trainset.train_labels[i] for i in range(len(trainset.train_labels))} # to speed up get item in Ddist
-indices_train = list(range(len_train))
+    class_dict = {i: trainset.train_labels[i] for i in
+                  range(len(trainset.train_labels))}  # to speed up get item in Ddist
 if not job_running:
-    shuffled_indices_train = torch.randperm(len_train)
-#    shuffled_indices_train = indices_train[torch.randperm(len(indices_train))]
-#    random.shuffle(shuffled_indices_train)
-    if opt.trainsetsize != -1:
-        assert 0 < opt.trainsetsize <= len_train, 'Error: invalid training dataset size.'
-        indices_train_reduced = shuffled_indices_train[:opt.trainsetsize]
-    else:
-        indices_train_reduced = shuffled_indices_train
-    len_train_reduced = len(indices_train_reduced)
-    # Training dataset is reduced to [Unlabeled samples:Training labeled samples:Validation labeled samples]
-    split_lbl_unlbl = int(opt.unlbldratio * len_train_reduced)
-    split_train_val = int(opt.valratio * len_train_reduced)
-    unlbl_idx = indices_train_reduced[:split_lbl_unlbl]
-    train_idx, val_idx = indices_train_reduced[split_lbl_unlbl + split_train_val:], indices_train_reduced[split_lbl_unlbl:split_lbl_unlbl + split_train_val]
+    if opt.predParams == '':
+        # Separate training data into fully labeled training, fully labeled validation and unlabeled dataset
+        len_train = len(trainset)
+        shuffled_indices_train = torch.randperm(len_train)
+        if opt.trainsetsize != -1:
+            assert 0 < opt.trainsetsize <= len_train, 'Error: invalid training dataset size.'
+            indices_train_reduced = shuffled_indices_train[:opt.trainsetsize]
+        else:
+            indices_train_reduced = shuffled_indices_train
+        len_train_reduced = len(indices_train_reduced)
+        # Training dataset is reduced to [Unlabeled samples:Training labeled samples:Validation labeled samples]
+        split_lbl_unlbl = int(opt.unlbldratio * len_train_reduced)
+        split_train_val = int(opt.valratio * len_train_reduced)
+        unlbl_idx = indices_train_reduced[:split_lbl_unlbl]
+        train_idx, val_idx = indices_train_reduced[split_lbl_unlbl + split_train_val:], indices_train_reduced[split_lbl_unlbl:split_lbl_unlbl + split_train_val]
     train_idx_2 = train_idx[torch.randperm(len(train_idx))]
 #    print(len(train_idx))
 #    print(len(val_idx))
@@ -315,29 +341,25 @@ train_sampler_2 = SubsetRandomSampler(train_idx_2)
 val_sampler = SubsetRandomSampler(val_idx)
 unlbl_sampler = SubsetRandomSampler(unlbl_idx)
 
-
-def worker_init(x):
-    signal.signal(signal.SIGINT, signal.SIG_IGN)
-
 # define data loaders
 assert trainset
 trainloader = torch.utils.data.DataLoader(trainset, batch_size=opt.batchSize, sampler=train_sampler,
-                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory, worker_init_fn=worker_init)
-trainloader2 = torch.utils.data.DataLoader(trainset, batch_size=opt.batchSize, sampler=train_sampler_2,
-                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory, worker_init_fn=worker_init)
+                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory)
+trainloader2 = torch.utils.data.DataLoader(trainsetGen, batch_size=opt.batchSize, sampler=train_sampler_2,
+                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory)
 
 valloader = torch.utils.data.DataLoader(trainset, batch_size=opt.batchSize, sampler=val_sampler,
-                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory, worker_init_fn=worker_init)
+                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory)
 
 batchSizeUnlbl = int(opt.batchSize * (len(unlbl_idx) / len(train_idx)))
 if batchSizeUnlbl == 0:
     batchSizeUnlbl = opt.batchSize
 unlblloader = torch.utils.data.DataLoader(trainset, batch_size=batchSizeUnlbl, sampler=unlbl_sampler,
-                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory, worker_init_fn=worker_init)
+                                          shuffle=False, num_workers=opt.workers, pin_memory=pinned_memory)
 
 assert testset
 testloader = torch.utils.data.DataLoader(testset, batch_size=opt.batchSize,
-                                         shuffle=False, num_workers=opt.workers, worker_init_fn=worker_init)
+                                         shuffle=False, num_workers=opt.workers)
 
 nz = int(opt.nz)
 nc = int(opt.nc)
@@ -366,6 +388,8 @@ netDDist = discriminator_model.badGanDDist(opt.imageSize, nc, ndf).to(device)
 # Generator
 if opt.gen:
     netG = generator_model.badGanGen(opt.imageSize, nc, nz, nclasses).to(device)
+elif opt.onlystn:
+    netG = generator_model.STN(opt.imageSize, nc, nz).to(device)
 else:
     netG = generator_model.UNet(opt.imageSize, nc, nc, nz, not opt.nostn).to(device)
 # Classifier
@@ -466,7 +490,6 @@ if opt.sched:
 for epoch in range(currentIteration, opt.niter):
     if opt.sched:
         scheduler.step()
-    netC.train()
     # Initialize losses
     totalLossD = 0.0
     totalLossDClass, totalLossDClassReal, totalLossDClassGen, totalLossDClassUnlbl = 0.0, 0.0, 0.0, 0.0
@@ -580,6 +603,7 @@ for epoch in range(currentIteration, opt.niter):
         reftrainimages = trainrealimages.clone()
         for idx in range(reftrainimages.size(0)):
             if opt.diffclass:
+                index = random.randint(0, len(train_idx) - 1)
                 reftrainimages[idx], _ = trainset.__getitem__(train_idx[index])
             else:
                 found = False
@@ -749,7 +773,7 @@ for epoch in range(currentIteration, opt.niter):
     # checkpoint each 5 epochs
     if epoch % 5 == 0 and epoch > 0:  # print every 10 epoch
         jobParams = {}
-        jobParams['Seed'] = manualSeed
+        jobParams['seed'] = seed
         jobParams['currentIteration'] = epoch
         jobParams['train_idx'] = train_idx.tolist()
         jobParams['train_idx_2'] = train_idx_2.tolist()
@@ -795,6 +819,9 @@ for epoch in range(currentIteration, opt.niter):
         vutils.save_image(traingenimages, '{0}/{1}_generated_samples.png'.format(outDir, epoch))
         realimages = trainrealimages.mul(0.5).add(0.5)
         vutils.save_image(realimages, '{0}/{1}_real_samples.png'.format(outDir, epoch))
+    if (epoch == 200) or (epoch == 500) or (epoch == 700):
+        torch.save(netG.state_dict(), '{0}/netG_epoch_{1}.pth'.format(outDir, epoch))
+
 
 # clean temporary file
 os.remove('{0}/netDClass_running'.format(outDir))
