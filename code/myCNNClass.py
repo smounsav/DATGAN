@@ -54,8 +54,9 @@ parser.add_argument('--momentum', type=float, default=0.9, help='momentum for SG
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--weight_decay', type=float, default=0, help='weight decay factor, default=0')
 parser.add_argument('--sched', action='store_true', help='Activate LR rate decay scheduler')
-parser.add_argument('--manualSeed', type=int, default=None, help='manuel seed')
+parser.add_argument('--fixedSeed', type=int, default=None, help='fix seed')
 # checkpoints
+parser.add_argument('--predParams', default='', help="path to predefined parameters")
 parser.add_argument('--netG', default='', help="path to netG (to continue training)")
 parser.add_argument('--netC', default='', help="path to previously saved model (to continue training)")
 # system
@@ -77,7 +78,7 @@ if opt.outDirPrefix is not None:
 else:
     outDir = ''
 if opt.outDir is None:
-    outDir = outDir + str(opt.dataset).upper() + 'baseline' + 'N' + str(opt.trainsetsize) + 'M' + str(opt.classModel) + 'C' + str(opt.lrC).replace('.', '') \
+    outDir = outDir + str(opt.dataset).upper() + 'baseline' + 'N' + str(opt.trainsetsize) + 'M' + str(opt.classModel) \
             + 'O' + str(opt.optim).upper()
     if opt.optim == 'adam':
                 outDir = outDir + 'BT1' + str(opt.beta1).replace('.', '')
@@ -86,10 +87,11 @@ if opt.outDir is None:
     if opt.optim == 'adam' or opt.optim == 'sgd':
         outDir = outDir + 'WD' + str(opt.weight_decay).replace('.', '')
     outDir = outDir + 'B' + str(opt.batchSize) +'C' + str(opt.lrC).replace('.', '')
-if opt.nostn:
-    outDir = outDir + 'NOSTN'
-else:
-    outDir = outDir + 'STN'
+if opt.netG != '':
+    if opt.nostn:
+        outDir = outDir + 'NOSTN'
+    else:
+        outDir = outDir + 'STN'
 if opt.lightda:
     outDir = outDir + 'LIDA'
 if opt.da:
@@ -124,7 +126,7 @@ if ongoingFile.exists():
     with open('{0}/job_running'.format(outDir)) as file:
         jobParams = json.loads(file.read())
     job_running =True
-    opt.manuelSeed = jobParams['Seed']
+    opt.manuelSeed = jobParams['seed']
     currentIteration = jobParams['currentIteration'] + 1
     train_idx = torch.tensor(jobParams['train_idx'])
     val_idx = torch.tensor(jobParams['val_idx'])
@@ -136,25 +138,36 @@ else:
     filelist = glob.glob('{0}/*'.format(outDir))
     for file in filelist:
         os.remove(file)
+    # load predefined parameters
+    if opt.predParams != '':
+        predefinedParams = Path(opt.predParams)
+        if predefinedParams.exists():
+            with open(predefinedParams) as file:
+                jobParams = json.loads(file.read())
+            opt.fixedSeed = jobParams['Random seed']
+            train_idx = torch.tensor(jobParams['Train dataset'])
+            val_idx = torch.tensor(jobParams['Validation dataset'])
+            print('Predefined parameters loaded\n')
     # log command line parameters
     print(opt)
     logger(outDir, 'parameters.txt', str(opt))
     print('Starting job\n')
 
 # define and log random seed for reproductibility
-if opt.manualSeed is not None:
-    manuelSeed = opt.manuelSeed
+if opt.fixedSeed is not None:
+    seed = opt.fixedSeed
 else:
-    manualSeed = random.randint(1, 10000) # fix seed
-random.seed(manualSeed)
-torch.manual_seed(manualSeed)
+    seed = random.randint(1, 10000) # fix seed
+random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
 if not job_running:
-    print("Random Seed: ", manualSeed)
-    logger(outDir, 'parameters.txt', 'Random seed: ' + str(manualSeed)) # log random seed
+    print("Random Seed: ", seed)
+    logger(outDir, 'parameters.txt', 'Random seed: ' + str(seed)) # log random seed
 
-
-# start cudnn autotuner
-cudnn.benchmark = True
+# change from cudnn autotuner to cudnn deterministic
+cudnn.benchmark = False
+cudnn.deterministic = True
 # activate cuda acceleration if available
 if torch.cuda.is_available():
     if opt.cuda:
@@ -184,8 +197,11 @@ if opt.dataset == 'mnist':
 if opt.lightda:
     if opt.dataset in ['mnist']:
         transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
+    elif opt.dataset in ['svhn']:
+        transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
     elif opt.dataset in ['cifar10']:
         transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
+
 if opt.da:
     if opt.dataset in ['mnist']:
         transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
@@ -242,22 +258,23 @@ elif opt.dataset == 'stl10':
 
 # Separate training data into training and validation
 if not job_running:
-    len_train = len(trainset)
-#    indices_train = list(range(len_train))
-    shuffled_indices_train = torch.randperm(len_train)
-#    shuffled_indices_train = indices_train
-#    random.shuffle(shuffled_indices_train)
-    if opt.trainsetsize != -1:
-        assert 0 < opt.trainsetsize <= len_train, 'Error: invalid required training dataset size. Not enough training samples.'
-        indices_train_reduced = shuffled_indices_train[:opt.trainsetsize]
-    else:
-        indices_train_reduced = shuffled_indices_train
-    len_train_reduced = len(indices_train_reduced)
-    # Training dataset is reduced to [Validation labeled samples:Training labeled samples]
-    split_train_val = int(opt.valratio * len_train_reduced)
-    train_idx, val_idx = indices_train_reduced[split_train_val:], indices_train_reduced[:split_train_val]
-#    print(len(train_idx))
-#    print(len(val_idx))
+    if opt.predParams == '':
+        len_train = len(trainset)
+    #    indices_train = list(range(len_train))
+        shuffled_indices_train = torch.randperm(len_train)
+    #    shuffled_indices_train = indices_train
+    #    random.shuffle(shuffled_indices_train)
+        if opt.trainsetsize != -1:
+            assert 0 < opt.trainsetsize <= len_train, 'Error: invalid required training dataset size. Not enough training samples.'
+            indices_train_reduced = shuffled_indices_train[:opt.trainsetsize]
+        else:
+            indices_train_reduced = shuffled_indices_train
+        len_train_reduced = len(indices_train_reduced)
+        # Training dataset is reduced to [Validation labeled samples:Training labeled samples]
+        split_train_val = int(opt.valratio * len_train_reduced)
+        train_idx, val_idx = indices_train_reduced[split_train_val:], indices_train_reduced[:split_train_val]
+    #    print(len(train_idx))
+    #    print(len(val_idx))
     logger(outDir, 'parameters.txt', 'Train dataset: ' + str(train_idx.tolist())) # Save samples used for training
     logger(outDir, 'parameters.txt', 'Validation dataset: ' + str(val_idx.tolist())) # Save samples used for validation
 train_sampler = SubsetRandomSampler(train_idx)
@@ -425,7 +442,7 @@ for epoch in range(currentIteration, opt.niter):
     # checkpoint each 5 epochs
     if epoch % 5 == 0 and epoch > 0:  # checkpoint every 5 epoch
         jobParams = {}
-        jobParams['Seed'] = manualSeed
+        jobParams['seed'] = seed
         jobParams['currentIteration'] = epoch
         jobParams['train_idx'] = train_idx.tolist()
         jobParams['val_idx'] = val_idx.tolist()
