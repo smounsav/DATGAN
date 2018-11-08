@@ -65,6 +65,41 @@ class UNet(nn.Module):
             x = self.outc(x)
         return x
 
+class STN(nn.Module):
+    def __init__(self, isize, n_channels_in,  nz):
+        super(STN, self).__init__()
+        self.inc = inconv(isize, n_channels_in, 64, nz)
+        self.down1 = down(64, 128)
+        self.down2 = down(128, 256)
+        self.down3 = down(256, 512)
+        self.down4 = down(512, 1024)
+
+        # Regressor for the 3 * 2 affine matrix
+        self.fc_loc = nn.Sequential(
+            nn.Linear(1024, 32),
+            nn.ReLU(),
+            nn.Linear(32, 3 * 2)
+        )
+
+        # Initialize the weights/bias with identity transformation
+        self.fc_loc[2].weight.data.zero_()
+        self.fc_loc[2].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
+
+    def forward(self, x, z):
+        x1 = self.inc(x, z.unsqueeze(-1).unsqueeze(-1))
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x5 = x5.mean(3).mean(2)
+        x5 = x5.view(-1, 1024)
+        theta = self.fc_loc(x5)
+        theta = theta.view(-1, 2, 3)
+        grid = F.affine_grid(theta, x.size())
+        xstn = F.grid_sample(x, grid)
+        return xstn
+
+
 class SCTG(nn.Module):
     def __init__(self, isize, nc, nfilter, nz):
         super(SCTG, self).__init__()
@@ -138,15 +173,15 @@ class badGanGen(nn.Module):
         self.inputnoise = nn.Sequential(
 #            nn.ConvTranspose2d(nz, 512, 2, 1 ,0, bias=False),
 #            nn.LeakyReLU(0.2))
-            nn.Linear(nz, 2 * 2 * 512, bias=False),
-            nn.BatchNorm1d(2 * 2 * 512),
+            nn.Linear(nz, 512 * 2 * 2),
+            nn.BatchNorm1d(512 * 2 * 2),
             nn.ReLU())
         # input 2 is the label in one hot encoding form
         self.inputlabel= nn.Sequential(
 #            nn.ConvTranspose2d(nclass, 512, 2, 1 ,0, bias=False),
 #            nn.LeakyReLU(0.2))
-            nn.Linear(nclass, 2 * 2 * 512, bias=False),
-            nn.BatchNorm1d(2 * 2 * 512),
+            nn.Linear(nclass, 512 * 2 * 2),
+            nn.BatchNorm1d(512 * 2 * 2),
             nn.ReLU())
         # input is 1024 x 2 x 2
         self.features = nn.Sequential(
@@ -158,8 +193,12 @@ class badGanGen(nn.Module):
             nn.Tanh())
 
     def forward(self, labels, noise):
-        inputnoi = self.inputnoise(noise.unsqueeze(-1).unsqueeze(-1))
-        inputlbl = self.inputlabel(labels.unsqueeze(-1).unsqueeze(-1))
+#        inputnoi = self.inputnoise(noise.unsqueeze(-1).unsqueeze(-1))
+        inputnoi = self.inputnoise(noise)
+        inputnoi = inputnoi.view(noise.size(0), 512, 2, 2)
+#        inputlbl = self.inputlabel(labels.unsqueeze(-1).unsqueeze(-1))
+        inputlbl = self.inputlabel(labels)
+        inputlbl = inputlbl.view(labels.size(0), 512, 2, 2)
         output = torch.cat([inputnoi, inputlbl], 1)
         x = self.features(output)
         return x
