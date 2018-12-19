@@ -16,16 +16,12 @@ class cnnClass(nn.Module):
         out_feat = nfilter * 2
         features.add_module('features_{0}_{1}_conv'.format(in_feat, out_feat),
                         nn.Conv2d(in_feat, out_feat, 4, 2, 1, bias=False))
-#        features.add_module('features.{0}.batchnorm'.format(out_feat),
-#                        nn.BatchNorm2d(out_feat))
         features.add_module('features_{0}_relu'.format(out_feat),
                         nn.LeakyReLU(0.2))
         in_feat = nfilter * 2
         out_feat = nfilter * 4
         features.add_module('features_{0}_{1}_conv'.format(in_feat, out_feat),
                         nn.Conv2d(in_feat, out_feat, 4, 2, 1, bias=False))
-#        features.add_module('features.{0}.batchnorm'.format(out_feat),
-#                        nn.BatchNorm2d(out_feat))
         features.add_module('features_{0}_relu'.format(out_feat),
                         nn.LeakyReLU(0.2))
         self.features = features

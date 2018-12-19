@@ -1,5 +1,6 @@
 import torch
 
+
 def logger(directory, filename, string):
     with open(directory + '/' + filename, 'a') as f:
         f.write(string + '\n')

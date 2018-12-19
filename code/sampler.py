@@ -45,7 +45,7 @@ class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
         elif dataset_type in [torchvision.datasets.CIFAR10]:
             return dataset.train_labels[idx]
         elif dataset_type in [torchvision.datasets.SVHN, torchvision.datasets.STL10]:
-            return dataset.trainset.labels[idx].item()
+            return dataset.labels[idx].item()
         elif dataset_type is torchvision.datasets.ImageFolder:
             return dataset.imgs[idx][1]
         else:

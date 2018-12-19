@@ -26,7 +26,7 @@ import models.generator as generator_model
 
 parser = argparse.ArgumentParser()
 # dataset
-parser.add_argument('--dataset', required=True, help='cifar10 | svhn | mnist | stl10 | folder')
+parser.add_argument('--dataset', required=True, help='cifar10 | svhn | mnist | fashionmnist | stl10 | folder')
 parser.add_argument('--dataroot', required=True, help='path to dataset')
 parser.add_argument('--trainsetsize', type=int, help='size of training dataset to use, -1 = full dataset', default=-1)
 parser.add_argument('--valratio', type=float, default=0.3, help='ratio of the labeled train dataset to be used as validation set')
@@ -192,10 +192,10 @@ else:
     normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 
 transformTrain = transforms.Compose([])
-if opt.dataset == 'mnist':
+if opt.dataset in ['mnist', 'fashionmnist']:
     transformTrain.transforms.append(transforms.Pad(2))
 if opt.lightda:
-    if opt.dataset in ['mnist']:
+    if opt.dataset in ['mnist', 'fashionmnist']:
         transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
     elif opt.dataset in ['svhn']:
         transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
@@ -203,7 +203,7 @@ if opt.lightda:
         transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
 
 if opt.da:
-    if opt.dataset in ['mnist']:
+    if opt.dataset in ['mnist', 'fashionmnist']:
         transformTrain.transforms.append(transforms.RandomCrop(32, padding=4))
         transformTrain.transforms.append(transforms.RandomAffine(10, translate=None, scale=(0.5, 2)))
     elif opt.dataset in ['svhn']:
@@ -244,6 +244,11 @@ elif opt.dataset == 'mnist':
     trainset = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformTrain)
     valset = dset.MNIST(root=opt.dataroot, train=True, download=True, transform=transformVal)
     testset = dset.MNIST(root=opt.dataroot, train=False, download=True, transform=transformTest)
+    nclasses = 10
+elif opt.dataset == 'fashionmnist':
+    trainset = dset.FashionMNIST(root=opt.dataroot, train=True, download=True, transform=transformTrain)
+    valset = dset.FashionMNIST(root=opt.dataroot, train=True, download=True, transform=transformVal)
+    testset = dset.FashionMNIST(root=opt.dataroot, train=False, download=True, transform=transformTest)
     nclasses = 10
 elif opt.dataset == 'svhn':
     trainset = dset.SVHN(root=opt.dataroot, split='train', download=True, transform=transformTrain)
