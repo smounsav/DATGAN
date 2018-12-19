@@ -1,3 +1,5 @@
+# Source https://github.com/uoguelph-mlrg/Cutout/blob/master/util/cutout.py
+
 import torch
 import numpy as np
 
