@@ -1,3 +1,5 @@
+# Source https://github.com/milesial/Pytorch-UNet/blob/master/unet/unet_parts.py
+
 #!/usr/bin/python
 
 # sub-parts of the U-Net model

@@ -1,3 +1,5 @@
+# Source https://github.com/kuangliu/pytorch-cifar/blob/master/models/preact_resnet.py
+
 '''Pre-activation ResNet in PyTorch.
 
 Reference:

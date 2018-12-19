@@ -1,3 +1,4 @@
+# Source https://github.com/owruby/shake-shake_pytorch/blob/master/models/shake_resnet.py
 # -*- coding: utf-8 -*-
 
 import math

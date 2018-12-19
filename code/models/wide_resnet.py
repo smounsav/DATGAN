@@ -1,3 +1,4 @@
+# Source https://github.com/xternalz/WideResNet-pytorch/blob/master/wideresnet.py
 import math
 import torch
 import torch.nn as nn
